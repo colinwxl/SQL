@@ -431,3 +431,4 @@ set lc_monetary = 'zh_CN.UTF-8';
 ### 字符串类型
 varchar(n)和char(n)分别是character varying(n)和character(n)的别名，没有声明长度的character等于character(1)，没有声明长度的character varying接受任何长度的字符串。
 #### 字符串函数和操作符
+Page
