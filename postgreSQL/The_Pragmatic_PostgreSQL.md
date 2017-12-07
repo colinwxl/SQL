@@ -431,4 +431,98 @@ set lc_monetary = 'zh_CN.UTF-8';
 ### 字符串类型
 varchar(n)和char(n)分别是character varying(n)和character(n)的别名，没有声明长度的character等于character(1)，没有声明长度的character varying接受任何长度的字符串。
 #### 字符串函数和操作符
-Page
+| 操作符/函数 | 描述    |
+| :--------: | :-----: |
+| string \|\| string | 字符串连接 |
+| bit_length(string) | 字符串里二进制位的个数 |
+| char_length(string) 或 character_length(string) | 字符串中的字符个数 |
+| convert(string using conversion_name) | 使用指定的转换名字改变编码。转换可以通过create conversion定义。当然，系统里有一些预定义的转换名字 |
+| lower(string) | 把字符串转化为小写 |
+| octet_length(string) | 字符串中的字节数 |
+| overlay(string placing string from int [for int]) | 替换子字符串：overlap('Txxxxas' placing 'hom' from 2 for 4) $\rightarrow$ Thomas |
+| position(substring in string) | 指定的子字符串的位置 |
+| substring(string [from int] [for int]) | 抽取子字符串 |
+| substring(string from pattern) | 抽取匹配POSIX正则表达式的子字符串：substring('Thomas' from '...\$') $\rightarrow$ mas |
+| substring(string from pattern for escape) | 抽取匹配SQL正则表达式的子字符串：substring('Thomas' from '%#"o_a"_' for '#') $\rightarrow$ oma |
+| trim([leading \| trailing \| both] [characters] from string) | 从字符串string的开头/结尾/两边删除只包含characters中字符（默认是一个空白）最长的字符串： trim(both 'x' from 'xThimxx') $\rightarrow$ Tom |
+| upper(string) | 把字符串转化为大写 |
+| ascii(string) | 参数第一个字符的ASCII码 |
+| btrim(string text [, characters text]) | 从string开头和结尾删除包含在参数characters中字符，直到遇到一个不是在characters中的字符串为止，参数characters的默认值为空格：btrim('aaosdbaaa', 'aa') $\rightarrow$ osdb |
+| chr(int) | 给出ASCII码的字符 |
+| convert(string text, [src_encoding name], dest_encoding name) | 把原来编码为src_encoding的字符串转化为dest_encoding编码（如果省略了src_encoding，将使用数据库编码） |
+| decode(string text, type text) | 把早先用encode编码的string里面的二进制数据解码 |
+| encode(data bytea, type text) | 把二进制数据编码为只包含ASCII形式的数据。支持的类型有：base64、hex、escape。 |
+| initcap(string) | 把每个单词的第一个字母转为大写，其余保留小写。单词是一系列字母数字组成的字符时，用非字母数字分隔。 |
+| length(string) | string中字符的数目 |
+| lpad(string text, length int [, fill text]) | 通过填充字符fill（默认为空白），把string填充为length长度。如果string已经比length长，则将其尾部截断。 |
+| ltrim(string text [, characters text]) | 从string的开头删除包含在参数characters中的字符，值到遇到一个不是在characters中的字符为止 |
+| md5(string) | 计算string的MD5散列，以十六进制返回结果 |
+| pg_client_encoding() | 当前客户端编码名称 |
+| quote_ident(string) | 返回使用于SQL语句的标识符形式（使用适当的引号进行界定）。只有在必要的时候会添加引号（字符串包含非标识符字符或者会转换大小写的字符）。嵌入的引号会被恰当地写双份。 |
+| quote_literal(string) | 返回适用于在SQL语句里当作文本的形式。嵌入的引号和反斜杠被恰当地写了双份：quote_literal('O\\'Reilly') $\rightarrow$ 'O"Reilly' |
+| regexp_replace(string text, pattern text, replacement text [, flags text]) | 替换匹配POSIX正则表达式的子字符串 |
+| repeat(string text, from text, to text) | 将string重复number次 |
+| replace(string text, from text, to text) |  把string里出现的所有子字符串from替换成字字符串to |
+| rpad(string text, length int [, fill text]) | 通过填充字符fill（默认为空白），把string填充为length长度。如果string已经比length长，则将其尾部截断。 |
+| rtrim(string text [, characters text]) | 从string的结尾删除包含在参数characters中的字符，值到遇到一个不是在characters中的字符为止 |
+| split_part(string text, delimiter text, field int) | 根据delimiter分隔string返回生成的第field个子字符串（1为基） |
+| strpos(string, substring) | 指定的子字符串的位置。和position(substring in string)一样，不过参数顺序相反 |
+| substr(string, from [, count]) | 抽取子字符串 |
+| to_ascii(string text [, encoding(text)]) | 把string从其他编码转换为ASCII（仅支持LATIN1、LATIN2、LATIN9、WIN1250编码）|
+| to hex(number int/bigint) | 把number转化成16进制表现形式 |
+| translate(string text, from text, to text) | 把在string中包含的任何与from中字符串匹配的字符转化为对应的在to中的字符：translate('12345', '14', 'db') $\rightarrow$ d23b5 |
+
+### 二进制数据类型
+#### 二进制数据类型解释
+PostgreSQL中的bytea对应MySQL和Oracle中的blob类型。Oracle的raw类型也可以使用这个类型取代。
+#### 二进制数据类型转义表示
+要转义一个字节值，通常需要把它的数值转换成对应的三位八进制数，并且加两个前导反斜杠。有些八进制数值可以加一个反斜杠直接转义，比如单引号和反斜杠本身。
+#### 二进制数据类型的函数 P68-P69
+
+### 位串类型
+#### 解释
+位串就是一串1和0的字符串。在PostgreSQL中可以直观显式地操作二进制位。包括bit(n)、bit varying(n)，没有长度的bit等效于bit(1)，没有长度的bit varying表示没有长度限制。
+如果明确地把一个位串值转换成bit(n)， 那么它的右边将被截断，或者在右边补齐0到刚好为n位，而不会抛出错误。bit varying(n) 类似。
+#### 使用
+```SQL
+create table test (a bit(3), b bit varying(5));
+insert into test values (b'101', b'00');
+insert into test values (b'11110', b'101'); # 超长报错
+```
+#### 操作符及函数
+| 操作符 | 描述 |
+| :-------------: | :-------------: |
+| \|\| | 连接 |
+| & | 位与 |
+| \| | 位或 |
+| # | 异或 |
+| ~ | 位非 |
+| << | 左移：b'1101' << 3 $\rightarrow$ 1000 |
+| >> | 右移：b'1101' >> 3 $\rightarrow$ 0001 |
+函数：length, bit_length, octet_length, position, substring, overlay, get_bit, set_bit。
+可以在整数和bit之间， 十进制、十六进制、二进制之间的转换：
+```SQL
+select 'xff'::bit(8)::int;
+select to_hex(255);
+```
+### 日期/时间类型
+#### 解释
+timestamp [ (p) ] [ without time zone ]
+timestamp [ (p) ] with time zone
+interval [ (p) ]
+date
+time [ (p) ] [ without time zone ]
+time [ (p) ] with time zone
+p为精度值，用以指明秒域中小数部分的位数。如果没有明确的默认精度。对于timestamp和interval类型，p的范围是0~6。
+timestamp数值是以双精度浮点数的方式存储的。timestamp值是以2000-01-01午夜之前或之后的秒数存储的。
+#### 日期输入
+如果DateStyle参数默认为"MDY"，则表示被“月 - 日 - 年”解析；如果参数设置为"DMY"，则按照“日 - 月 - 年”解析；设置为"YMD"，按照“年 - 月 - 日”解析。
+```SQL
+create table t (col1 date);
+insert into t values (date '12-10-2010');
+show datestyle;
+set datestyle="YMD"
+```
+|  | Header Two     |
+| :------------- | :------------- |
+| Item One       | Item Two       |
