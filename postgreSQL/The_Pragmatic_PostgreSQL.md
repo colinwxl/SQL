@@ -523,6 +523,278 @@ insert into t values (date '12-10-2010');
 show datestyle;
 set datestyle="YMD"
 ```
-|  | Header Two     |
-| :------------- | :------------- |
-| Item One       | Item Two       |
+| 例子 | 描述 |
+| :-------------: | :-------------: |
+| date'April 26, 2011' | 在任何datestyle输入模式下都无歧义 |
+| date'2011-01-08' | ISO 8601格式（建议格式），任何方式下都是2011年1月8号， 而不会是2011年8月1日 |
+| date'1/8/2011' | 有歧义，“MDY”：2011年1月8日，“DMY”：2011年8月1日 |
+| date'1/18/2011' | “MDY”：2011年1月18日，其他模式下被拒绝 |
+| date'03/04/11' | “MDY”：2011年3月4日，“DMY”：2011年4月3日， “YMD”：2003年4月11日 |
+| date'2011-Apr-08', date'Apr-08-2011', date'08-Apr-2011' | 2011年4月8日 |
+| date'19980405' | ISO 8601格式，1998年4月5日 |
+| date'110405' | ISO 8601格式， 2011年4月5日 |
+| date'2011.062' | 2011年的第62天，即2011年3月3日 |
+| date'J2455678' | 儒略日，即从公元前4713年1月1日起到今天过去的天数，多为天文学家使用。2455678天，即2011年4月26日 |
+| date'April 26,202BC' | 公元前4月26日 |
+#### 时间输入
+time被认为是time without time zone的类型，这样即使字符串中有时区，也会被忽略：
+```SQL
+select time '04:05:06';
+select time '04:05:06 PST';
+select time with time zone '04:05:06 PST'
+```
+时间字符串可以用冒号作为分隔符，即输入格式为"hh:mm:ss"，也可以不用分隔符。
+| 例子 | 描述 |
+| :-------------: | :-------------: |
+| time '22:55:06.789', time '22:55:06', time '22:55', time '225506' | ISO 8601 |
+| time with time zone '22:55:06.789+8', '22:55:06+08:00', '225506+08' | ISO 8601 |
+| time with time zone '22:55:06 CCT' | 缩写的时区 |
+| select time with time zone '2003-04-12 04:05:06 Asia/Chongqing';| 用名字声明时区 |
+注意，最好不要用时区缩写来表示时区。PostgreSQL中的时区缩写可以查询PostgreSQL中的时区缩写可以查询pg_timezone_abbrevs。
+#### 特殊值
+epoch, infinity, -infinity, now, today, tomorrow, yesterday, allballs
+#### 函数和操作符
+日期、时间和interval类型之间可以进行加减乘除运算。P75-76，表5-18。
+函数：
+| 函数 | 描述 |
+| :-------------: | :-------------: |
+| age(timestamp, timestamp) | 参数相减后的“符号化”结果 |
+| age(timestamp) | 从current_date减去参数后的结果 |
+| clock_timestamp | 实时时钟的当前时间戳 |
+| current_date | 当前日期 |
+| current_time | 当前时间 |
+| current_timestamp | 当前事务开始时的时间戳 |
+| date_part(text, timestamp/interval) | 获取子域（等效于extract）：date_part('hour', timestamp '2001-02-16 20:38:40') → 20 |
+| date_trunc(text, timestamp) | 截断成指定的精度：date_trunc('hour', timestamp '2001-02-16 20:38:40') → 2001-02-16-20:00:00 |
+| extract(field from timestamp/interval) | 获取子域 |
+| isfinite(timestamp/interval) | 测试是否为有穷时间戳/隔 |
+| justify_days(interval) | 按每月30天调整时间间隔：justify_days(interval '30 days') → 1 month |
+| justify_hours(interval) | 按每天24小时调整时间间隔：justify_hours(interval '24 hours') → 1 day |
+| justify_interval(interval) | 使用justify_days和justify_hours调整时间间隔的同时进行正负号调整：justify_interval(interval '1 mon - 1 hour') → 29 days 23:00:00 |
+| localtime | 当日时间 |
+| localtimestamp | 当前事务开始的时间戳 |
+| now() | 当前事务开始时的时间戳 |
+| statement_timestamp() | 实时时钟的当时时间戳 |
+| timeofday() | 与clock_timestamp相同，但结果是一个text字符串 |
+| transaction_timestamp() | 当前事务开始时的时间戳 |
+除了这些函数以外，还支持SQL的overlaps操作符：
+(start1, end1) overlaps (start2, end2)
+(start1, length1) overlaps (start2, length2)
+这个表达式在两个时间域重叠的时候生成真值。
+#### 时间函数
+current_time 和 current_timestamp 返回带有时区的值，localtime 和 localtimestamp 返回不带时区的值。这四个函数都可以接受一个精度参数，该精度会导致结果的秒数域四舍五入到指定的小数位。如果没有精度参数，将给予所能得到的全部精度。这些函数全部都是按照当前事务的开始时刻返回结果的，所以它们的值在事务运行的整个期间内都不会改变。例如在`bigin;`，`end;`事务中，这些函数的调用值都保持相同。
+statement_timestamp()，clock_timestamp()，timeofday()这些函数在事务中返回实时时间值。
+所有日期/时间类型还接受特殊的文本值now，用于声明当前的日期和时间（乃当前事务的开始时刻）。因此，下面三个都返回相同的结果：
+```SQL
+select current_timestamp;
+select now();
+select timestamp with time zone 'now';
+```
+```SQL
+extract(field from source) # return double precision
+```
+field 的值：century、year、decade、millennium、quarter、month、week、dow[求日期是星期几，0为星期天]、day[本月的第几天]、doy[本年的第几天]、hour、minute、second、epoch[对于date和timestamp，是自1970-01-01 00:00:00以来的秒数（可为负）；对interval，它是时间间隔的总秒数]、milliseconds[秒域乘以1000]、microseconds、timezone、timezone_hour、timezone_minute。
+
+### 枚举类型
+#### 枚举类型的使用
+在PostgreSQL中，使用枚举类型需要先使用create type创建一个枚举类型。
+```SQL
+create type week as enum ('Sun', 'Mon', 'Tues', 'Wed', 'Thur', 'Fri', 'Sat');
+create table duty (person text, weekday week);
+insert into duty (person, weekday) values
+  ('张三', 'Sun'),
+  ('李四', 'Mon'),
+  ('王二', 'Tues'),
+  ('赵五', 'Wed');
+select * from duty where weekday = 'Sun';
+# 输入的字符不在枚举类型之间，则会报错：
+select * from duty where weekday = 'Sun.';
+# 使用“\dT”命令查看枚举类型的定义：
+\dT+ week
+# 直接查询表pg_enum也可以看到枚举类型的定义：
+select * from pg_enum;
+```
+#### 枚举类型的说明
+在枚举类型中，值得顺序是创建枚举类型时定义的顺序。所有比较标准的运算符及其他相关的聚集函数都可支持枚举类型：
+```SQL
+select min(weekday), max(weekday) from duty;
+select * from duty where weekday = (select max(weekday) from duty);
+```
+一个枚举值占4字节。一个枚举值的文本标签长度由namedatalen设置并编译到PostgreSQL中，且是以标准编译方式进行的，也就意味着至少是63字节。枚举类型的值是大小写敏感的。
+#### 枚举类型的函数
+| 函数 | 描述 |
+| :-------------: | :-------------: |
+| enum_first(anyenum) | 返回枚举类型的第一个值：enum_first('Mon'::week) → Sun |
+| enum_last(anyenum) | 返回枚举类型的最后一个值 |
+| enum_range(anyenum) | 以一个有序的数组形式返回输入枚举类型的所有值 |
+| enum_range(anyenum, anyenum) | 以一个有序的数组返回在给定的两个枚举值之间的范围。若第一个为空，从第一个开始；若第二个为空，到最后一个结束：enum_range(null, 'Wed'::week) → {Sun, Mon, Tues, Wed} |
+除了两个参数形式的enum_range外，其余这些函数会忽略传递给它们的具体值，使用null加上类型转换也将得到相同的结果。
+
+### 几何类型
+#### 几何类型概况
+| 类型名称 | 描述 | 表现形式 |
+| :----: | :----: | :----: |
+| point | 平面中的点 | (x,y) |
+| line | 直线 | ((x1,y1),(x2,y2)) |
+| lseg | 线段 | ((x1,y1),(x2,y2)) |
+| box | 矩形 | ((x1,y1),(x2,y2)) |
+| path | 闭合路径 | ((x1,y1),...) |
+| path | 开放路劲 | [(x1,y1),...] |
+| polygon | 多边形 | ((x1,y1),...) |
+| circle | 圆 | <(x,y),r> |
+#### 几何类型的输入
+`类型名称 '表现形式'` or `'表现形式'::类型名称`
+```SQL
+select '1,1'::point;
+select '(1,1)'::point;
+select lseg '1,1,2,2';
+select lseg '(1,1),(2,2)';
+select lseg '((1,1),(2,2))';
+select lseg '[(1,1),(2,2)]';
+select path '(1,1),(2,2)'; -- 默认为闭合
+select box '1,1,2,2';
+select box '(1,1),(2,2)';
+select box '((1,1),(2,2))';
+select circle '1,1,5';
+select circle '((1,1),5)';
+select circle '<(1,1),5>';
+```
+#### 几何类型的操作符
+1. 平移运算符`+`、`-`及缩放/旋转运算符`*`、`/`
+这四个运算符都是二元运算符，运算符左值可以是`point`、`box`、`path`、`circle`，运算符的右值只能是`point`：
+```SQL
+-- 点与点的加减乘除相当于两个复数之间的加减乘除
+select point '(1,2)' + point '(10,20)'; -- (11,22)
+select point '(1,2)' - point '(10,20)'; -- (-9,-18)
+select point '(1,2)' * point '(10,20)'; -- (-30,40)
+select point '(1,2)' / point '(10,20)'; -- (0.1,0)
+-- 矩形与点之间的运算：
+select box '((0,0),(1,1))' + point '(2,2)'; -- (3,3),(2,2)
+select box '((0,0),(1,1))' - point '(2,2)'; -- (-1,-1),(-2,-2)
+select box '((0,0),(1,1))' * point '(2,2)'; -- (0,4),(0,0)
+-- 路径与点之间的运算：
+select path '(0,0),(1,1),(2,2)' + point '(10,20)'; -- (10,20),(11,21),(12,22)
+select path '(0,0),(1,1),(2,2)' - point '(10,20)'; -- (-10,-20),(-9,-19),(-8,-18)
+-- 圆与点之间的运算：
+select circle '((0,0),1)' + point '10,20'; -- <(10,20),1>
+select circle '((0,0),1)' - point '10,20'; -- <(-10,-20),1>
+-- 对于乘法，如果乘数的y值为0，比如point 'x,0'，则相当于集合对象缩放x 倍：
+select circle '((0,0),1)' * point '(3,0)'; -- <(0,0),3>
+select circle '((1,1),1)' * point '(3,0)'; -- <(3,3),3>
+-- 如果乘数为point '0,1'，则相当于几何图像逆时针旋转90度，如果乘数为point '0,-1'，则表示顺时针旋转90度：
+select circle '((1,1),1)' * point '(0,1)'; -- <(-1,1),1>
+```
+2. 运算符 `#`
+对于两个线段，计算出交点；对于两个矩形，计算出相交的矩形；对于路径或多边形，计算出顶点数。
+```SQL
+select lseg '(0,0),(2,2)' # lseg '(0,2),(2,0)'; -- (1,1)
+-- 如果两个线段没有相交，则返回空。
+-- 两个矩形：
+select box '(0,0),(2,2)' # box '(1,0),(3,1)'; -- (2,1),(1,0)
+-- 路径或多边形
+select # path '(1,1),(2,2),(3,3)'; -- 3
+select # polygon '(1,1),(2,2),(3,3)'; -- 3
+```
+3. 运算符 `@-@`
+此为一元运算符，参数只能为`lseg`、`path`。一般用于计算几何对象的长度：
+```SQL
+select @-@ lseg '(0,0),(1,1)'; -- 1.41421235623731
+select @-@ path '(0,0),(2,2)'; -- 5.65685424949238
+select @-@ path '(0,0),(1,1),(2,2)'; -- 5.65685424949238
+select @-@ path '[(0,0),(1,1),(0,1)]'; -- 2.41421235623731
+select @-@ path  '((0,0),(1,1),(0,1))'; -- 3.41421235623731
+```
+4. 运算符 `@@`
+一元运算，用于计算中心点：
+```SQL
+select @@ circle '<(1,1),2>';
+select @@ box '(0,0),(1,1)'; -- (0.5,0.5)
+select @@ lseg '(0,0),(1,1)'
+```
+5. 运算符 `##`
+二元运算符，用于计算两个几何对象上离得最近的点：
+```SQL
+select point '(0,0)' ## lseg '(2,0),(0,2)'; -- (1,1)
+select point '(0,0)' ## box '(1,1),(2,2)'; -- (1,1)
+select lseg '(1,0),(0,1.5)' ## lseg '((2,0),(0,2))'; -- (0,1.5)
+```
+6. 运算符 `<->`
+二元运算符，用于计算两个几何对象之间的距离：
+```SQL
+select lseg '(0,1),(1,0)' <-> lseg '(0,2),(2,0)';
+select circle '((0,0),1)' <-> circle '((3,0),1)'; -- 1
+-- 对于两个矩形，实际上是中心点之间的距离：
+select box '((0,0),(1,1))' <-> box '((2,0),(4,1))'; -- 2.5
+```
+7. 运算符 `&&`
+二元运算符，用于计算两个几何对象之间是否重叠，只要有一个共同点，则为真：
+```SQL
+select box '((0,0),(1,1))' &&  box '((1,1),(2,2))'; -- t
+select box '((0,0),(1,1))' && box '((2,2),(3,3))'; -- f
+select circle '((0,0),1)' && circle '((1,1),1)'; -- t
+select polygon '(0,0),(2,2),(0,2)' && polygon '(0,1),(1,1),(2,0)'; -- t
+```
+8. 判断两个对象相对位置的运算符
+判断左右：
+`<<`: 是否严格在左
+`>>`: 是否严格在右
+`&<`: 没有延展到右边
+`&>`: 没有延展到左边
+判断上下：
+`<<|`: 严格在下
+`|>>`: 严格在上
+`&<|`: 没有延展到上面
+`|&>`: 没有延展到下面
+`<^`: 在下面（允许接触）
+`>^`: 在上面（允许接触）
+其他：
+`?#`: 是否相交
+`?-`: 是否水平或水平对齐
+`?|`: 是否竖直或数值对齐
+`?-|`: 两个对象是否垂直
+`?||`: 两个对象是否平行
+`@>`: 是否包含
+`<@`: 包含或在其上
+```SQL
+select box '((0,0),(1,1))' << box '((1.1,1.1),(2,2))'; -- t
+select polygon '(0,0),(0,1),(1,0)' << polygon '(0,1.1),(1.1,1),(1.1,0)'; -- f
+select polygon '(0,0),(0,1),(1,0)' << polygon '(1.1,0),(1.1,1),(2,0)'; -- t
+select circle '((0,0),1)' << circle '((1,1),1)'; -- f
+select circle '((0,0),1)' << circle '((3,3),1)'; -- t
+```
+9. 判断两个几何对象是否相同的运算符 `~=`
+```SQL
+select polygon '((0,0),(1,1))' ~= polygon '((1,1),(0,0))'; -- t
+select polygon '(0,0),(1,1),(1,0)' polygon '(1,1),(0,0),(1,0)'; -- t
+select box '(0,0),(1,1)' ~= box '(1,1),(0,0)'; -- t
+```
+#### 几何类型的函数
+| 函数 | 描述 |
+| :----: | :----: |
+| area(object) | 面积 |
+| center(object) | 中心 |
+| diameter(circle) | 直径 |
+| height(box) | 高度 |
+| width(box) | 宽度 |
+| isclosed(path) | 是否闭合 |
+| isopen(path) | 是否开放 |
+| length(object) | 长度 |
+| npoints(path/polygon) | 点数 |
+| pclose(path) | 把路径转成闭合路径 |
+| popen(path) | 把路径转成开放路径 |
+| radius(circle) | 半径 |
+
+转换函数：box(circle)、box(point,point)、box(polygon)、 circle(box)、circle(point, double precision)、circle(polygon)、lseg(box)、lseg(point,point)、path(polygon)、point(double precision, double precision)、point(box)、point(circle)、point(lseg)、point(polygon)、polygon(box)、polygon(circle)、polygon(npts,circle)、polygon(path)。
+
+### 网络地址类型
+PostgreSQL提供专门数据类型存储IPv4、IPv6和MAC地址。
+| 类型 | 存储空间 | 描述 |
+| :----: | :----: | :----: |
+| cidr | 7或19字节 | IPv4或IPv6的网络地址 |
+| inet | 7或19字节 | IPv4或IPv6的网络地址或主机地址 |
+| macaddr | 6 字节 | 以太网MAC地址 |
+> refer to P98-P103
+
+### 复合类型
+在PostgreSQL中可以如C语言中的结构体一样定义一个符合类型。
+#### 复合类型的定义：
