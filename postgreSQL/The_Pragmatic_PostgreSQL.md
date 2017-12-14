@@ -29,7 +29,7 @@ sudo apt-get install python-dev
 ```
 2> 安装
 ```bash
-./configure --prefix=/usr/local/pgsql9.5.5 --with-perl --with-python
+./configure --prefix=/usr/local/pgsql9.5.5 --with-perl --with-python --with-libxml
 make
 sudo make install
 cd /usr/local/psql9.5.5
@@ -798,3 +798,1365 @@ PostgreSQL提供专门数据类型存储IPv4、IPv6和MAC地址。
 ### 复合类型
 在PostgreSQL中可以如C语言中的结构体一样定义一个符合类型。
 #### 复合类型的定义：
+```SQL
+create type complex as (
+  r double precision,
+  i double precision
+);
+create type person as (
+  name text,
+  age integer,
+  sex boolean
+);
+-- 目前不能声明约束（比如 not null）
+create table capacitance_test_data (
+  test_time timestamp,
+  voltage complex,
+  current complex
+);
+-- 可使用此类型作为函数参数：
+create function complex_multi(complex, complex) returns complex
+  as $$ select row($1.r*$2.r - $1.i$2.i, $1.r*$2.i - $1.i*$2.r)::complex as language sql;
+```
+#### 复合类型的输入
+`( val1, val2, ...)` 单引号加圆括号的形式。在此格式中，可以在任何字段值周围放上双引号，如果值本身包含逗号或圆括弧，则必须用双引号括起。要让一个字段值是null，那么在列表里它的位置上就不要写任何字符。要一个空字符，则写一对双引号。也可以用row表达式语法来构造复合类型值。表达式超过一个字段，关键字row可省略。
+```SQL
+create type person as (
+  name text,
+  age integer,
+  sex boolean
+);
+create table author (
+  id int,
+  person_info person,
+  book text
+);
+insert into author values (1, '("张三", 29, true)', '张三的自传');
+insert into author values (2, row('李四',29, true), '自传');
+insert into author values (3, ("王五", 28, true), '自传');
+```
+#### 访问复合类型
+访问复合类型字段的一个域就如在C语言中访问结构体中的一个成员一样，即写出一个点和域的名字就可以了。
+```SQL
+select person_info.name from author; -- error
+select (person_info).name from  author;
+select (author.person_info).name from author;
+select (my_func(...)).field from ...
+```
+#### 修改复合类型
+```SQL
+-- 更新整个字段：
+insert into author values (('张三', 29, true), '自传');
+update author set person_info = row('李四', 39, true) where id = 1;
+update author set person_info = ('王二', 49, true) where id = 2;
+-- 更新眸子子域：
+update author set person_info.name = '王二二' where id =2;
+update author set person_info.age = (person_info).age + 1 where id = 2;
+-- 不能在set后面出现的字段名周围加上圆括号，但需要在等号右边的表达式中引用同一个字段则需加上圆括号，否则会报错。在insert也可以指定复合字段的子域，未指定子域用null填充：
+insert into author (id, person_info.name, person_info.age) values (10, '张三', 29);
+```
+#### 复合类型的输入与输出
+P106
+
+### XML类型
+要使用xml数据类型，在编译PostgreSQL源码时必须使用`--with-libxm`参数。
+#### xml类型的输入
+格式： xml '<tag>hello world</tag>' 或 '<tag>hello world</tag>'::xml类型
+xml中存储的xml数据有两种：
+- 由xml标准定义的“documents”。
+- 由xml标准定义的“content”片段。
+“content”片段可以有多个顶级元素或“character”节点，但“documents”只能有一个顶级元素。可以使用“xmlvalue is document”来判断一个特定的xml值是一个“documents”还是“content”片段。
+PostgreSQL的xmloption参数用来指定输入的数据是“documents”还是“content”片段，默认情况下此值为“content”片段。修改成“document”将不能输入有多个顶级元素的内容：
+```SQL
+show xmloption;
+select xml '<a>a</a><b>b</b>';
+set xmloption to document;
+select xml '<a>a</a><b>b</b>'; -- error
+```
+也可以由函数xmlparse通过字符串数据来产生xml类型的数据，使用xmlparse函数是SQL标准中将字符串转换成XML的唯一方式。语法如下：
+xmlparse ( ( document | content) value)
+其中参数“document”和“content”表示指定XML数据的类型：
+```SQL
+select xmlparse (document '<?xml version="1.0"?><person><name>John</name><sex>F</sex></person>');
+select xmlparse (content '<person><name>John</name><sex>F</sex></person>');
+```
+#### 字符集的问题
+提交输入到xml类型的字符串中的编码声明会被忽略掉，同时内容的字符集会被认为是当前数据库服务器的字符集。
+正确处理XML字符集的方式是，先将XML数据的字符串在当前客户端中编码成当前客户端的字符集，然后再发送到服务端，这样会被转换成服务器的字符集存储。当查询xml类型的值时，数据又会被转换成客户端字符集，所以客户端收到的xml数据的字符集就是客户端的字符集。
+通常xml数据都是用UTF-8编码格式处理的，因此把PostgreSQL数据库服务器端编码也设置成UTF-8将是一种比较好的选择。
+#### xml类型的函数
+| 函数 | 描述 | 例子 | 结果 |
+| :----: | :----: | :----: | :----: |
+| xmlcomment(text) | 创建一个包含XML注释的特定文本内容的值。文本中不能包含“--”或不能以“-”结束。如果参数为空，结果也为空。 | xmlcomment('hello') | \<!--hello--> |
+| xmlconcat(xml[, ...]) | 把XML值列表拼接成XML“content”片段。忽略列表中的空值，只有当参数都为空时结果才是空 | xmlconcat('\<a/>', '\<os>linux\</os>') | \<a/>\<os>linux\<os/> |
+| xmlelement(name, name [, xmlattributes (value [as attname][, ...])][, content, ...]) | 生成一个带有给定名称、属性和内容的xml元素 | xmlelement(name linux, xmlattributes('2.6.18' as version)) | \<linux version="2.6.18"/> |
+| xmlforest(content [as name][, ...]) | 把指定的名称和内容元素生成为一个XML“森林” | xmlforest('2.6' as linux, 5.0 as vers) | \<linux>2.6\</linux>\<vers>5.0\</vers> |
+| xmlpi(name target[, content]) | 创建一条XML处理指令。内容不能包含字符序列“?>” | xmlpi(name php, 'echo "hello world";') | \<php echo "hello world";?> |
+| xmlroot(xml, version text \| no value[, standalone yes\|no\|no value]) | 更改root节点的属性。如果指定version，它将替换root节点的version值，如果指定一个standalone，它替换根节点的standalone值 | xmlroot(xmlparse(document '\<?xml version="1.1" standalone="no"?>\<content>abc\</content>'), version '1.0', standalone yes) |
+| xmlagg(xml) | 聚合函数，把多行的xml数据聚合成一项 | create table test (i int, d xml); insert into test values (1, '\<a>a\</a>'); insert into test values (2, '\</b>'); select xmlagg(d) from test; | \<a>a\</a>\<b/> |
+PostgreSQL提供了xpath函数来计算XPath1.0表达式的结果。XPath是W3C的一个标准，它最主要的目的是在XML1.0或XML1.1文档节点树中定位节点。目前有XPath1.0和XPath2.0两个版本。其中，XPath1.0是1990年成为W3C标准的，而XPath2.0标准的确立是在2007年。
+xpath函数定义如下：
+xapth(xpath, xml[, nsarray])
+此函数的第一个参数是XPath1.0表达式，第二个参数是xml类型的值，第三参数是命名空间的数组映射。这个数组应该是一个两维数组，第二维的长度等于2，即包含2个元素。
+示例：
+```SQL
+select xpath('/my/text()', '<my:a xmlns:my="http://example.com">test</my:a>', array [array['my', 'http://example.com']]);
+select xpath('//mydefns:b/text()', '<a xmlns="http://example.com"><b>test</b></a>', array[array['mydefns', 'http://example.com']]);
+```
+PostgreSQL还提供了把数据库中的内容导出成XML数据的一些函数：
+- table_to_xmlschema(tbl regclass, nulls boolean, tableforest boolean, targetns text)
+- query_to_xmlschema(query text, nulls boolean, tableforest boolean, targetns text)
+- cursor_to_xmlschema(cursor refcursor, nulls boolean, tableforest boolean, targetns text)
+- table_to_xml_and_xmlschema(tbl regclass, nulls boolean, tableforest boolean, targetns text)
+- query_to_xml_and_xmlschema(query text, nulls boolean, tableforest boolean, targetns text)
+- schema_to_xml(schema name, nulls boolean, tableforest boolean, targetns text)
+- schema_to_xmlschema(schema name, nulls boolean, tableforest boolean, targetns text)
+- schema_to_xml_and_xmlschema(schema name, nulls boolean, tableforest boolean, targetns text)
+- database_to_xml(nulls boolean, tableforest boolean, targetns text)
+- database_to_xmlschema(nulls boolean, tableforest boolean, targetns text)
+- database_to_xml_and_xmlschema(nulls boolean, tableforest boolean, targetns text)
+```SQL
+create table test01(id int, note text);
+insert into test01 select seq, repeat(seq::text, 2) from generate_series(1,5) as t(seq);
+select table_to_xmlschema('test01'::regclass, true, true, 'tangspace');
+-- table_to_xmlschema把表的定义转成了xml格式
+select query_to_xmlschema('select * from test01', true, true, 'tangspace');
+-- query_to_xmlschema把查询结果中行的定义转成了xml
+select table_to_xml_and_xmlschema('test01'::regclass, true, true, 'tangspace');
+-- table_to_xml_and_xmlschema与table_to_xmlschema唯一不同的地方在于把表中的数据也导入到xml中了。
+select schema_to_xml('public', true, true, 'tangspace');
+-- schema_to_xml把schema中的数据导成了xml格式。
+```
+
+### JSON类型
+JSON：JavaScript Object Notation
+#### JSON类型简介
+JSON类型是把输入的数据原封不动地存放到数据库中，使用的时候需要重新解析数据，而JSONB类型是在存放的时候就把JSON解析成二进制格式了，使用的时候就不需要再次解析了，所以JSONB在使用时性能会更高。此外，JSONB支持在其上建索引。
+JSONB类型不会保留多余的空格，不会保留key的顺序，也不会保留重复的key。
+可以使用\uXXXX形式的转义，从而忽视数据库的字符集编码。
+#### JSON类型的输入与输出
+```SQL
+select '9'::json, '"osdba"'::json, 'true'::json, 'null'::json;
+select json '9', json '"osdba"', json 'true', json 'null';
+-- 使用jsonb的类型也一样
+select '[9, true, "osdba", null]'::json, jsonb '[9, true, "osdba", null]';
+select json '{"name": "osdba", "age": 40, "sex": true, "money": 250.12}';
+-- 对于输入带小数点的情况：
+select json '{"p": 1.6735777674525e-27}'; -- {"p": 1.6735777674525e-27}
+select jsonb '{"p": 1.6735777674525e-27}'; -- {"p": 0.0000000000000000000000000016735777674525}
+```
+#### JSON类型的操作符
+| 操作符 | 右操作符类型 | 描述 | 例子 | 结果 |
+| :---: | :---: | :---: | :---: | :---: |
+| -> | int | 取JSON数组的元素 | '[1,2,3]'::json->1 | 2 |
+| -> | text | 通过key取JSON中的子对象 | '{"a":1, "b":2}'::json->'a' | 1 |
+| ->> | int | 取JSON数组的元素，但返回的是一个text类型 | '[1,2,3]'::json->>1 | '2' |
+| ->> | text | 通过key取JSON中的子对象，但返回是一个text类型 | '{"a":1, "b":2}'::json->>'a' | '1' |
+| #> | text[] | 通过指定路径取JSON中的对象 | '{"a":{"b":{"c":1}}}'::json#>'{a,b}' | {"c":1} |
+| #>> | text[] | 同上，但返回的是一个text类型 | '{"a":{"b":{"c":1}}}'::json#>>'{a,b,c}' | '1' |
+仅可用于JSONB的操作符：
+| 操作符 | 描述 |     
+| :---: | :---: |
+| = | 两个JSONB对象的内容是否相同 |
+| @> | 左边的JSONB对象是否包含右边的JSONB对象 |
+| <@ | 左边的JSONB对象是否包含于右边的JSONB对象中 |
+| ? | 指定的字符串是否存在于JSON对象中的key或字符串类型元素中。注意JSON中的元素需要时字符串类型 |
+| ?\| | 右值是一个数组，指定此数组中的任意一个元素是否存在于JSON对象的字符串类型的key或元素中。注意JSON中的元素需要时字符串类型 |
+| ?& | 右值是一个数组，指定此数组中的任意一个元素是否存在于JSON对象的字符串类型的key或元素中。注意JSON中的元素需要时字符串类型 |
+#### JSON类型的函数
+P118~P121
+#### JSON 类型的索引
+因为JSON类型没有提供相关的比较函数。所以在JSON类型的列上无法直接建索引，但可以在JSON类型的列上建函数索引。
+JSONB类型的列上可以直接建索引。除了可以建BTree索引以外，JSONB还支持建GIN索引，GIN索引可以高效地从JSONB内部的key/value对中搜索数据。
+在JSONB上创建GIN索引的方式有两种：
+- 使用默认的jsonb_ops操作符创建
+- 使用jsonb_path_ops操作符创建
+
+create index idx_name on table_name using gin (index_col);
+create index idx_name on table_name using gin (index_col jsonb_path_ops);
+关于GIN索引，jsonb_ops的与jsonb_path_ops的区别为：在json_ops的GIN索引中，JSONB数据中的每个key和value都是作为一个单独的索引项的，而jsonb_path_ops则只为每个value创建了一个索引项。
+```SQL
+create table jtest01 (
+  id int,
+  jdoc json
+);
+create or replace function random_string(integer) returns text as
+$BODY$
+select array_to_string(
+  array (
+    select substring(
+      '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+      from (ceil(random()*62))::int for 1
+    )
+    from generate_series(1, $1)
+  ),
+  ''
+)
+$BODY$
+language sql volatile;
+insert into jtest01 select t.seq, ('{"a":{"a1":"a1a1", "a2":"a2a2"}, "name":"'||random_string(10)||'", "b":"bbbbb"}'):: json from generate_series(1,100000) as t(seq);
+-- 用函数json_extract_path_text建立一个函数索引：
+create index on jtest01 using btree (json_extract_path_text(jdoc,'name'));
+analyze jtest01;
+-- 看看查询没有走索引的执行计划：
+explain analyze verbose select * from jtest01 where jdoc->>'name'='lnBtcJLR85'; -- Seq Scan
+-- 看看走了此函数索引的执行计划：
+explain analyze verbose select * from jtest01 where json_extract_path_text(jdoc, 'name') = 'lnBtcJLR85'; -- Index Scan
+-- 在JSONB类型上建GIN索引：
+create table jtest02 (
+  id int,
+  jdoc jsonb
+);
+create table jtest03 (
+  id int,
+  jdoc jsonb
+);
+insert into jtest02 select id, jdoc::jsonb from jtest01;
+insert into jtest03 select * from jtest02;
+create index idx_jtest02_jdoc on jtest02 using gin (jdoc);
+create index idx_jtest03_jdoc on jtest03 using gin (jdoc jsonb_path_ops);
+analyze jtest02;
+analyze jtest03;
+select * from jtest02 where jdoc @> '{"name":"lnBtcJLR85"}';
+select * from jtest03 where jdoc @> '{"name":"lnBtcJLR85"}';
+explain analyze verbose select * from jtest02 where jdoc @> '{"name":"lnBtcJLR85"}'; -- Bitmap Heap Scan
+explain analyze verbose select * from jtest03 where jdoc @> '{"name":"lnBtcJLR85"}'; -- Bitmap Heap Scan
+-- 这两个SQL都走到了索引上，查看索引大小
+select pg_indexes_size('jtest02');
+select pg_indexes_size('jtest03');
+```
+
+### Range类型
+#### Rangele类型简介
+用于表示范围，如一个整数的范围、一个时间的范围，而范围底下的基本类型（如整数、时间）则被称之为Range类型的subtype。
+假设我们有一个需求，某个IP地址库记录了每个地区的IP地址范围，现在需要查询客户的IP地址在哪个地区。该IP地址库的定义如下：
+```SQL
+create table ipdb1 (
+  ip_begin inet,
+  ip_end inet,
+  area text,
+  sp text);
+```
+如果要查询的是IP地址115.195.180.105在哪个地区：
+```SQL
+select * from ipdb1 where ip_begin <= '115.195.180.105'::inet and ip_end >= '115.195.180.105'::inet;
+```
+因为表上没有索引，所以会进行全表扫描，故而很慢。这时可以在ip_begin和ip_end上建索引：
+```SQL
+create index idx_ipdb_ip_start on ipdb1(ip_begin);
+create index idx_ipdb_ip_end on ipdb1(ip_end);
+```
+在PostgreSQL中，上面的SQL可以使用到这两个索引，但都是先分别扫描两个索引建位图，然后通过位图进行and操作：
+```SQL
+explain analyze verbose select * from ipdb1 where ip_begin <= '115.195.180.105'::inet and ip_end >= '115.195.180.105'::inet; -- Bitmap Heap Scan
+```
+使用Range类型，通过创建空间索引的方式来执行：
+首先，创建类似的IP地址库表：
+```SQL
+create type inetrange as range (subtype = inet);
+create table ipdb2 (
+  ip_range inetrange,
+  area text,
+  sp text);
+insert into ipdb2 select ('[' || ip_begin || ',' || ip_end ']') ::inetrange, area, sp from ipdb1;
+```
+然后，创建gist索引：
+```SQL
+create index id_pdb2_ip_range on ipdb2 using gist (ip_range);
+select * from ipdb2 where ip_range @> '115.195.180.105':inet;
+explain analyze verbose select * from ipdb2 where ip_range @> '115.195.180.105'::inet;
+```
+#### 创建Range类型
+内置：int4range, int8range, numrange, tsrange(无时区的时间戳范围类型), tstzrange, daterange.
+创建语法：
+```SQL
+create type name as range (
+  subtype = type -- 指定子类型
+  [, subtype_opclass = subtype_operator_class ] -- 指定子类的操作符
+  [, collation = collation ] -- 指定排序规则
+  [, canonical = canonical_function ] -- 创建一个稀疏的Range类型，而非连续的Range类型
+  [, subtype_diff = subtype_diff_function ] -- 定义子类型的差别函数
+)
+-- 示例：
+create type floatrange as range (
+  subtype = float8,
+  subtype_diff = float8mi
+);
+```
+#### Range类型的输入与输出
+'[value1, value2]', '[value1, value2)', '(value1, value2]', '(value1, value2)', 'empty'。如果是稀疏型的range，其内部的存储格式为“[value1, value2)”.
+```SQL
+select '(0,6)'::int4range; -- [1,6)
+select '[0,6]'::int4range; -- [0,7)
+-- int4range总是把输入格式转换成“'[value1, value2)'”格式。
+-- 对于连续型的range，内部存储则是精确存储的
+select '[0,6]'::numrange; -- [0,6]
+select '[0,6)'::numrange; -- [0,6)
+-- Range类型还可以表示极值的区间：
+select '[1,)'::int4range; -- [1,)
+select '[,1)'::int4range; -- (,1)
+-- 使用Range类型的构造函数输入Range类型的值，Range类型的构造函数名称与类型名称相同：
+select int4range(1,10,'[)'); -- [1,10)
+select int4range(1,10,'()'); -- [2,10)
+select int4range(1,10); -- [1,10)
+```
+#### Range类型的操作符
+=, <>, <, >, <=, >=, @>(包含), <@(被包含), &&(重叠), <<(严格在左), >>(严格在右), &<(没有扩展到右边), &>(没有扩展到左边), -|-(连接在一起), +(union), \*(intersection), -(difference)
+#### Range类型的函数
+- lower(anyrange), 获得范围的起始值
+lower(int4range '(11,22)') -- 12
+lower(int4range '[,22)') is null -- t
+lower(int4range 'empty') is null --t
+- upper(anyrange), 获得范围的结束值
+upper(int4range '[11,22)') -- 22
+- isempty(anyrange), 是否是空范围
+isempty(int4range '(,)') -- f
+isempty(int4range '(1,1)') -- t
+- lower_inc(anyrange), 起始值是否在范围内
+lower_inc(int4range '[1,1)') -- f
+- upper_inc(anyrange), 结束值是否在范围内
+upper_inc(int4range '[1,2)') -- f
+- lower_inf(anyrange), 起始值是否是一个无穷值
+- upper_inf(anyrange), 结束值是否是一个无穷值
+#### Range类型的索引和约束
+在Range的列上可以创建GiST和SP-GiST索引：
+```SQL
+create index index_name on table_name using gist (range_column);
+```
+在SQL查询语句中，可以使用=, &&, <@, @>, <<, >>, -|-, &<, &>来执行索引。
+在Range类型上也可以建Btree索引，但Btree索引是使用比较运算符的，通常只有在对Range的值进行排序时使用。
+在Range的列上也可以建立约束，让其范围总是不重叠：
+```SQL
+create table rtest01 (
+  idrange int4range,
+  exclude using gist (idrange with &&)
+);
+insert into rtest01 values (int4range '[1,5)');
+insert into rtest01 values (int4range '[4,5)'); -- error
+```
+如果是一个有两列的表，第一列是普通类型，第二列是Range类型， 若要让第一列值相等的行其第二列的值也不重叠，则需要使用另一个扩展模块btree_gist来实现了：
+首先，安装btree_gist：
+```bash
+cd source_code_path/contrib/btree_gist
+make
+make install
+```
+使用示例：
+```SQL
+create extension btree_gist;
+create table rtest02 (
+  id int,
+  idrange int4range,
+  exclude using gist (id with =, idrange with &&)
+);
+insert into rtest02 values (1, int4range '[1,5)');
+insert into rtest02 values (2, int4range '[2,5)');
+insert into rtest02 values (1, int4range '[2,5)'); -- error
+```
+
+### 数组类型
+#### 数组类型的声明
+```SQL
+create table testtab04(id int, col1 int[], col2 int[10], col3 text[][]);
+```
+在目前的PostgreSQL中，如果在定义数组类型中填一个数组长度的数字，并不会限制数组的长度；定义时指定数组的维度也是没有意义的，数组的维度是根据实际插入的数据来确定的。
+#### 如果输入数组值
+```SQL
+create table testtab05 (id int, col1 int[], col2 text[], col3 box[]);
+insert into testtab05 values (1, '{1,2,3}', '{how, how many, "who, what.", "It''s ok", "{os\"dba}"}', '{((1,1), (2,2)); ((3,3), (4,4)); ((1,2), (7,9))}');
+-- 在PostgreSQL中，每个类型都定义的一个分隔号：
+select typname, typdelim, from pg_type where typname in ('int4', 'int8', 'bool', 'char', 'box'); -- ,,,,;
+-- 一个简单的数组构造器由关键字array、一个左方括号（[）、一个或多个元素值得表达式（用逗号分隔）、一个右方括号组成：
+insert into testtab05 values (2, array[1,2,3], array['how', 'how many', 'who, what.', 'It''s ok', '{os"dba}'], array['((1,1),(2,2))'::box,box '(3,3),(4,4)','1,2,7,9'::box]);
+-- 多维数组：
+create table testtab06 (id int, col1 text[][]);
+insert into testtab06 values (1, array[['os', 'dba'], ['dba', 'os']]);
+-- 向多维数组中插入值时，各个维度的元素个数必须相同
+insert into testtab06 values (2, '{{a,b}, {c,d,e}}'); -- error
+insert into testtab06 values (2, '{{a,b,null}, {c,d,e}}');
+-- PostgreSQL数据库中数组的下标是从1开始的，但也可以指定下标的开始值：
+create table test02 (id int[]);
+insert into test02 values ('[2:4]={1,2,3}');
+select id[2], id[3], id[4] from test02;
+```
+#### 访问数组
+```SQL
+create table testtab07 (id int, col1 text[]);
+insert into testtab07 values (1, '{aa, bb, cc, dd}');
+select * from testtab07;
+select id, col1[1] from testtab07;
+select id, col1[1:2] from testtab07;
+create table testtab08 (id int, col1 int[][]);
+insert into testtab08 values (1, '{{1,2,3}, {4,5,6}, {7,8,9}}');
+select id, col1[1][1], col1[1][2], col1[2][1], col1[2][2] from testtab08;
+select id, col1[1:1] from testtab08; -- {{1,2,3}}
+select id, col1[1:3][1:1] from testtab08; -- 等价于：
+select id, col1[3][1:1] from testtab08;
+-- PostgreSQL中规定，只要出现一个冒号，其他的单个下标将表示从1开始的一个切片，下标的数值表示该切片的结束值，“col1[3][1:2]”中的“col[3]”实际上表示的是“col[1:3]”，同理：
+select id, col1[1:2][2] from testtab08;
+```
+#### 修改数组
+```SQL
+update testtab08 set col1='{{10,11,12}, {13,14,15}, {16,17,18}}' where id=1;
+update testtab08 set col1[2][1]=100 where id=1;
+-- 不能直接修改多维数组中某一维的值
+```
+#### 数组的操作符
+=, <>, <, >, <=, >=, @>, <@, &&, ||([不]同维度的数组与数组连接; 元素类型必须相同), ||(元素与数组之间的连接; 元素与数组的元素类型必须相同)
+#### 数组的函数
+P139~P142
+
+### 伪类型（Pseudo-Type）
+是PostgreSQL中不能作为字段的数据类型，但它可以用于声明一个函数的参数或者结果类型：
+any、anyelement、anyarray、anynoarray、anyenum、anyrange、cstring、internal、language_handler、fdw_handler、record、trigger、void、opaque。
+
+### 其他类型
+#### UUID类型
+UUID（Universally Unique Identifiers）定义在“RFC 4122”和“ISO/IEC 9834-8:2005”中。它是一个128bit的数字。
+#### pg_lsn类型
+表示LSN（Log Sequence Number）的一种数据类型。LSN表示WAL日志的位置。
+```SQL
+\d pg_stat_replication View "pg_catalog.pg_stat_replication"
+\d pg_replication_slots
+```
+在数据库内部，LSN是一个64bit的大整数，其输出的格式类似如下形式：
+16/B374D848
+
+## 第六章 逻辑结构管理
+### 6.1 数据库逻辑结构介绍
+在一个PostgreSQL数据库系统中，数据的组织结构可以分为以下三层：
+1. 数据库
+2. 表、索引：一般，在PostgreSQL中表的术语为“Relation”。
+3. 数据行：在PostgreSQL中行的术语一般为“Tuple”。
+>在PostgreSQL中，一个数据库服务(或叫实例)下可以有多个数据库，而一个数据库不能属于多个实例。在Oracle数据库中，一个实例只能有一个数据库，但一个数据库可以在多个实例中（如RAC）。
+
+### 6.2 数据库基本操作
+#### 6.2.1 创建数据库
+语法：
+```SQL
+CREATE DATABASE name
+  [ [ WITH ] [ OWNER [=] user_name ]
+    [ TEMPLATE [=] template ]
+    [ ENCODING [=] encoding ]
+    [ LC_COLLATE [=] lc_collate ]
+    [ LC_CTYPE [=] lc_ctype ]
+    [ TABLESPACE [=] tablespace ] -- 指定和新数据库关联的表空间名
+    [ CONNECTION LIMIT [=] connlimit ] ] -- 数据库可以接受多少并发的连接，默认为-1，表示没有限制
+-- 默认模板数据库：template1, ISO-8859-1(LATIN1), template0公认不包含会受字符集编码或排序影响的数据或索引，故可以作为创建任意字符集数据库的模板。
+create database testdb01 encoding 'LATIN1' template template0;
+-- PostgreSQL数据库服务端并不支持通常的汉字字符集“GBK”、GB18030”，所以一般都是使用“UTF8”字符集来支持中文的。
+```
+#### 6.2.2 修改数据库
+ALTER DATABASE name [ [ WITH ] option [ ... ] ]
+option可以是：
+- connection limit
+- rename to new_name
+- set tablespace new_tablespace
+- set configuration_parameter {to|=} {value|default}
+- set configuration_parameter from current
+- reset configuration_parameter
+- reset all
+```SQL
+-- 改变数据库testdb01的最大连接数为10
+alter database testdb01 connection limit 10;
+-- 重命名为mydb01
+alter database testdb01 rename to mydb01;
+-- 让用户一连接到这个数据库时，某个配置参数就设置为一个指定的值。如，关闭在数据库testdb01上的默认索引扫描：
+alter database testdb01 set enable_indexscan to off;
+```
+#### 6.2.3 删除数据库
+```SQL
+drop database [ if exists ] name;
+drop database mytestdb01; -- 不存在，报错
+drop database if exists mytestdb01; -- 不存在，不报错
+-- 如果还有人连接在这个数据库上，将不能删除该数据库
+```
+#### 6.2.4 常见问题及解答
+- 不能在事务块中创建或删除数据库。
+- 可以在事务块中修改数据库。
+### 6.3 模式
+#### 6.3.1 模式的定义
+模式（schema）是数据库中的一个概念，可以将其理解为一个命名空间或目录。不同的模式下可以有相同名称的表、函数等对象且互相不冲突。只要有权限，每个模式的对象可以互相调用。
+在MySQL中可以同时访问多个Database中的对象。
+使用模式的几个主要原因：
+- 允许多个用户在使用同一个数据库时彼此互不干扰。
+- 把数据库对象放在不同的模式下，然后组织成逻辑组，让它们更便于管理。
+- 第三方的应用可以放在不同的模式中，这样就不会和其他对象的名字冲突了。
+#### 6.3.2 模式的使用
+```SQL
+create schema schema_name [ authorization user_name ] [ schema_element [ ... ] ]
+create schema authorization user_name [ schema_element [ ... ] ]
+create schema osdba;
+\dn
+drop schema osdba;
+create schema osdba
+  create table t1 (id int, title text)
+  create table t2 (id int, content text)
+  create view v1 as select a.id, a.title, b.content from t1 a, t2 b where a.id=b.id;
+-- 切换schema：
+show search_path;
+set search_path to osdba,public;
+-- 在模式中可以修改名称和属主：
+alter schema name rename to new_name;
+alter schema name owner to new_owner;
+```
+#### 6.3.3 公共模式
+要创建或者访问模式中的对象：schema_name.table_name
+#### 6.3.4 模式的搜索路径 `search_path`
+在搜索路径中的第一个模式叫当前模式。它还是在create table没有声明模式名时新建表所属的模式。
+#### 6.3.5 模式的权限
+用户要访问模式中不属于他们的对象，需要模式的所有者在模式上赋予他们“usage”权限，创建需要“create”权限。默认情况下，每个人在public模式上都有“create”和“usage”权限。可以撤销：
+```SQL
+revoke create on schema public from public;
+```
+其中，第一个“public”是模式的名称，第二个“public”的意思是“所有用户”。前一个是标识符，后一个是关键字。
+赋予权限：
+```SQL
+grant all on schema my_schema to my_user;
+```
+#### 6.3.6 模式的移植性
+在SQL标准里，同一个模式里的对象是不能被不同的用户所拥有的。Oracle数据库不允许创建和它们所有者不同名的模式，模式和用户的概念几乎是一样的。如果在PostgreSQL中为每个用户都创建了一个与用户名同名的模式，那么就能与Oracle数据库相兼容了。
+SQL标准里也没有public模式的概念。
+MySQL通过允许跨数据库访问来提供模式功能。
+
+### 6.4 表
+#### 6.4.1 创建表
+语法：
+```SQL
+create table [schema_name.]table_name (
+  col01_name data_type,
+  col02_name data_type,
+  ...
+);
+```
+主键：字段定义后面加上“primary key”。复合主键：
+```SQL
+constraint constraint_name primary key (col01_name, col02_name, ...)
+-- 示例（约束子句是放在列定义后面的）：
+create table test (id1 int, id2 int, note varchar(20), constraint pk_test primary key (id1, id2));
+```
+唯一键：
+constraint constraint_name unique (col01_name, col02_name, ...)
+check也是一种约束形式，用于定义某些字段的值必须满足某种要求：
+constraint constraint_name check(expression)
+如，建一张存储孩子信息的表child，其中的年龄字段（age）要求不能大于18岁：
+```SQL
+create table child (name varchar(20), age int, note text, constraint ck_child_age check(age<18));
+```
+以其他表为模板：
+```SQL
+create table baby (like child); -- 不复制源表列上的约束
+```
+复制源表列上的约束和其他信息，使用“including”：
+- including defaults
+- including constraints
+- including indexes
+- including storage
+- including comments
+- including all
+```SQL
+create table baby2 (like child including all);
+```
+也可以用“create table ... as ...”来创建表：
+```SQL
+create table baby2 as select * from child with no data;
+```
+#### 6.4.2 表的存储属性
+P154~P156
+TOAST（The Oversized-Attribute Storage Technique），用于存储一个大字段的值。
+TOAST的策略：
+plain：避免压缩或线外存储；extended：允许压缩和线外存储；external：允许行外存储，但是不允许压缩；main：允许压缩，但不允许行外存储。
+修改：
+alter table table_name alter col_name set storage external;
+> 只有当数据的长度超过一个BLOCK的四分之一大小时，才会触发TOAST对数据进行压缩。
+
+在PostgreSQL中，更新一条数据时，旧的数据行并不会被覆盖，如果块中有空闲空间，则新行直接插入这个数据块中，这时，Heap-Only Tuple技术，会在旧行与新行之间建一个链表，不需要更新索引。
+#### 6.4.3 临时表
+PostgreSQL支持会话级的临时表和事务级的临时表，在前者中，数据可以一直保存在整个会话的生命周期中，而后者的数据只存在于这个事务的生命周期中。
+> Oracle中，只是临时表中的数据小时，而临时表还存在。
+
+如果在两个不同的session中分别创建一个同名的临时表，实际上创建的是不同的两张表。
+```SQL
+create temporary table tmp_t1 (id int primary key, note text);
+\d
+-- 临时表实在schema下所生成的一个特殊的表，这个schema的名称为“pg_temp_xx”，其中的“xx”代表一个数字，如“2”，“3”等，不同的session这个数字是不同的。
+-- 另开一个psql
+psql postgres
+\d pg_temp_xx.tmp_t1
+-- 新的session无法访问该表
+insert into tmp_t1 values (1,'1111');
+insert into tmp_t1 values (2,'2222');
+-- 默认情况下，创建的临时表是会话级的，事务级的临时表，要加“on commit delete rows”：
+create temporary table tmp_t2(id int primary key, note text) on commit delete rows;
+begin;
+insert into tmp_t2 values (1,'aaaa');
+insert into tmp_t2 values (2,'bbbb');
+select * from tmp_t2;
+end;
+select * from tmp_t2; -- 空表
+-- “temporary”可以缩写为“temp”，前面还可以加“global”、“local”关键字，这样可以与其他数据库创建的临时表的语句保持兼容。
+```
+“on commit”子句有三种形式：
+- on commit preserve rows: 不带on commit时的默认情况；
+- on commit delete rows: 事务一提交，数据就消失了；
+- on commit drop: 事务一提交，临时表就消失了。创建临时表的语句与插入数据的语句需要放到一个事务中。
+#### 6.4.4 默认值
+建表时，可以为一个字段指定默认值。
+```SQL
+create table student (no int, name varchar(20), age int default 15);
+insert into student values (1, "张三");
+insert into student values (2, '李四');
+-- 在使用update语句时，也可以使用关键字“default”来代表默认值：
+update student set age=16;
+update student set age=default where no=2;
+-- 没声明默认值，那么默认为null
+-- 默认值可以是一个表达式，它会在插入默认值的时候计算（不是在创建表的时候）。
+create table blog (id int, title text, create_date timestamp default now());
+insert into blog values (1,'PostgreSQL创建临时表');
+select * from blog;
+```
+#### 6.4.5 约束
+- 检测约束
+- 非空约束
+- 唯一约束
+- 主键
+- 外键
+1. 检查约束
+```SQL
+-- 限制年龄在0~150之间：
+create table person (
+  name varchar(40),
+  age int check (age >= 0 and age <= 150),
+  sex boolean
+);
+-- 给约束加一个名字
+create table person (
+  name varchar(40),
+  age int constraint check_age check (age >= 0 and age <= 150),
+  sex boolean
+);
+-- 约束多个字段
+create table books (
+  book_no integer,
+  name text,
+  price numeric check (price > 0),
+  discounted_price numeric check (discounted_price > 0),
+  check (price > discounted_price)
+); -- 前两个约束是“字段约束”，第三个约束是“表约束”。
+-- 给表约束赋予名称：
+create table books (
+  book_no integer,
+  name text,
+  price numeric,
+  discounted_price numeric,
+  check (price > 0 and discounted_price > 0)
+  constraint valid_discount check (price > discounted_price)
+);
+-- 当约束表达式的计算结果为null时，检查约束会被认为是满足条件的。
+```
+2. 非空约束
+```SQL
+-- 一个非空约束总被写成一个字段约束，功能上等效于创建一个检查约束：
+create table books (
+  book_no integer not null,
+  name text,
+  price numeric
+);
+-- 一个字段可以有多个约束，书写顺序无所谓：
+create table books (
+  book_no integer not null,
+  name text,
+  price numeric not null check (price > 0)
+);
+```
+3. 唯一约束
+```SQL
+-- 唯一约束保证在一个字段或一组字段里的数据相较于表中其他行的数据是唯一的：
+create table books (
+  book_no integer unique,
+  name text,
+  price numeric
+);
+-- 表约束：
+create table books (
+  book_no integer,
+  name text,
+  price numeric,
+  unique(book_no)
+);
+```
+4. 外键约束
+```SQL
+-- 外键约束是表间关系的一种约束，用于约束本表中一个字段或多个字段的数值必须出现在另一个表的一个字段或多个字段中。也成为两个相关表之间的参照完整性约束。
+create table class (
+  class_no int primary key,
+  class_name varchar(40)
+);
+create table student (
+  student_no int primary key,
+  student_name varchar(40),
+  age int,
+  class_no int references class(class_no)
+);
+```
+#### 6.4.6 修改表
+“alter table”：增加字段；删除字段；增加约束；删除约束；修改默认值；修改字段数据类型；重命名字段；重命名表。
+```SQL
+-- 增加字段
+alter table class add column class_teacher varchar(40); -- 存在的行，默认填充null
+alter table class add column class_teacher varchar(40) check (class_teacher <> '');
+
+-- 删除字段
+alter table class drop column class_teacher; -- 内容和约束都会被删除，有外键时则报错。
+alter table class drop column class_no cascade; -- 会把student表中的外键“student_class_no_fkey”也删除掉。
+
+-- 增加约束
+alter table student add check (age < 16); -- 要先确定该表复符合约束条件，否则增加约束会失败
+alter table class add constraint unique_class_teacher unique (class_teacher);
+-- 非空约束：
+alter table class alter column student_name set not null;
+
+-- 删除约束
+alter table student drop constraint constraint_name;
+\d table_name; -- 查看约束的名称
+-- 非空约束没有名称：
+alter table student alter column student_no drop not null;
+
+-- 修改默认值，不影响表中现有的任何数据行，只为将来的insert命令改变默认值：
+alter table student alter column age set default 15;
+
+-- 删除默认值，相当于设置默认值为null，原先没有定义默认值，也不会报错：
+alter table student alter column age drop default;
+
+-- 修改字段数据类型
+alter table student alter column student_name type text;
+-- 只有在字段里现有的每个项都能隐式地转换成新类型是，才能成功。
+-- 改变字段numeric类型的精度时，虽然精度改小可成功，但会导致精度数据丢失
+-- 数据类型转换过程中，约束都会相应的转换，可能出错，最好转前删除，转后重加。
+
+-- 重命名字段
+alter table books rename column book_no to book_id;
+
+-- 重命名表
+alter table class rename to classes;
+```
+
+#### 6.4.7 表继承
+表继承是PostgreSQL特有的东西：
+```SQL
+create table persons (
+  name text,
+  age int,
+  sex boolean
+);
+create table students (
+  class_no int
+) inherits (persons);
+insert into students values ('张三',15,true,1);
+insert into students values ('翠莲',14,false,2);
+select * from students;
+select * from persons;
+-- 更改 “students” 表中的数据后，表 “persons” 也发生变化。反之亦然。
+update students set age=13 where name='张三'; -- 与下面一句等效：
+update persons set age=13 where name='张三';
+select * from persons;
+insert into persons values('王五',30,true);
+select * from persons;
+select * from students;
+-- 当查询父表时，会把子表的数据也查询出来，反之则不行。只查父表本身：
+select * from only persons;
+-- 一个子表可以从多个父表继承。所有父表的检查约束和非空约束都会自动被子表继承。不过其他类型的约束（唯一、主键、外键）则不会被继承。
+```
+#### 6.4.8 分区表
+PostgreSQL通过继承来实现分区表。分区表就是把逻辑上的一个大表分割成物理上的几个小块。表的大小超过了数据库服务器的物理内存大小则应该使用。
+间分区表的步骤：
+1） 创建“父表”，所有的分区都从它继承。
+2） 创建几个“子表”，每个都从主表上继承。
+3） 给分区表增加约束，定义每个分区表允许的键值。
+4） 对于每个分区，在关键字字段上创建一个索引，也可创建其他你想创建的索引。
+5） 定义一个规则或者触发器，把对主表的数据插入重定向到合适的分区表。
+6） 确保constraint_exclusion里的配置参数postgresql.conf是打开的。打开后，如果查询中where子句的过滤条件与分区的约束条件匹配，那么这个查询会智能地只查询这个分区，而不会查询其他分区。
+```SQL
+-- 销售明细表（主表）：
+create table sales_detail (
+  product_id int not null, -- 产品编号
+  price numeric(12,2), -- 单价
+  amount int not null, -- 数量
+  sale_date date not null, -- 销售日期
+  buyer varchar(40), -- 买家名称
+  buyer_contact text -- 买家的联系方式
+);
+-- 按销售日期进行分区（子表）：
+create table sales_detail_y2014m01 (check (sale_date >= date '2014-01-01' and sale_date < date '2014-02-01')) inherits (sales_detail);
+create table sales_detail_y2014m02 (check (sale_date >= date '2014-02-01' and sale_date < date '2014-03-01')) inherits (sales_detail);
+create table sales_detail_y2014m03 (check (sale_date >= date '2014-03-01' and sale_date < date '2014-04-01')) inherits (sales_detail);
+...
+create table sales_detail_y2014m12 (check (sale_date >= date '2014-12-01' and sale_date < date '2015-01-01')) inherits (sales_detail);
+-- 在分区键“sale_date”上建索引：
+create index sales_detail_y2014m01_sale_date on sales_detail_y2014m01 (sale_date);
+create index sales_detail_y2014m02_sale_date on sales_detail_y2014m02 (sale_date);
+create index sales_detail_y2014m03_sale_date on sales_detail_y2014m03 (sale_date);
+...
+create index sales_detail_y2014m12_sale_date on sales_detail_y2014m12 (sale_date);
+-- 触发器
+create or replace function sales_detail_insert_trigger()
+returns trigger as $$
+begin
+  if ( new.sale_date >= date '2014-01-01' and
+      new.sale_date < date '2014-02-01') then
+      insert into sales_detail_y2014m01 values (new.*);
+
+  if ( new.sale_date >= date '2014-02-01' and
+      new.sale_date < date '2014-03-01') then
+      insert into sales_detail_y2014m02 values (new.*);
+
+  ...
+
+  if ( new.sale_date >= date '2014-12-01' and
+      new.sale_date < date '2015-01-01') then
+      insert into sales_detail_y2014m12 values (new.*);
+
+  else
+      raise exception 'Date out of range. Fix the sales_detail_insert_trigger () function!';
+end;
+$$
+language plpgsql;
+
+create trigger insert_sale_detail_trigger
+  before insert on sales_detail
+  for each row execute procedure sales_detail_insert_trigger ();
+
+-- 删除历史表，不会使触发器失效
+
+-- 使用规则实现分区定位：
+create rule sales_detail_insert_y2014m01 as on insert to sales_detail where
+    ( sale_date >= date '2014-01-01' and sale_date < date '2014-02-01' )
+  do instead
+    insert into sales_detail_y2014m01 values (new.*);
+
+create rule sales_detail_insert_y2014m02 as on insert to sales_detail where
+    ( sale_date >= date '2014-02-01' and sale_date < date '2014-03-01' )
+  do instead
+    insert into sales_detail_y2014m02 values (new.*);
+
+...
+
+create rule sales_detail_insert_y2014m12 as on insert to sales_detail where
+    ( sale_date >= date '2014-12-01' and sale_date < date '2015-01-01' )
+  do instead
+    insert into sales_detail_y2014m12 values (new.*);
+```
+批量插入的情况下，比触发器更有优势。copy不会触发规则。超过规则设置范围之外的，直接插入主表，不报错。
+**分区的优化技巧**
+打开约束排除（constraint_exclusion）是一种查询优化技巧。参数 “constraint_exclusion” 默认就是 “partition” ，如果使用默认值，在SQL查询中将where语句的过滤条件与表上的check条件进行对比，就可得知不需要扫描的分区，从而跳过相应的分区表，性能也就得到了提高：
+```SQL
+explain select count(*) from sale_date where sale_date >= date '2014-12-01';
+-- 将 “constraint_exclusion” 设置成“off”，则会扫描每张分区子表：
+set constraint_exclusion='off';
+explain select count(*) from sale_date where sale_date >= date '2014-12-01';
+```
+### 6.5 触发器
+触发器（trigger）是一种由事件自动触发执行的特殊的存储过程，这些事件可以是对一个表进行insert、update、delete等操作。
+#### 6.5.1 创建触发器
+语法：
+```SQL
+create [ constraint ] trigger name { before | after | instead of} { event [or ...] }
+  on table_name
+  [ from referenced_table_name ]
+  { not deferrable | [ defferable ] { initially immediate | initially deferred } }
+  [ for [ each ] { row | statement } ]
+  [ when ( condition ) ]
+  execute procedure function_name (arguments)
+```
+步骤：
+先为触发器建一个执行函数，此函数的返回类型为触发器类型，然后即可创建相应的触发器。
+示例：
+```SQL
+create table student (
+  student_no int primary key,
+  student_name varchar(40),
+  age int
+);
+create table score (
+  student_no int,
+  chineses_score int,
+  math_score int,
+  test_date date
+);
+-- 触发器：删除表student中的一条记录时，把表score中的成绩记录也删除掉。
+-- 创建执行函数：
+create or replace function student_delete_trigger()
+returns trigger as $$
+begin
+  delete from score where student_no = old.student_no;
+  return old;
+end;
+$$
+language plpgsql;
+-- 创建触发器：
+create trigger delete_student_trigger
+  after delete on student
+  for each row execute procedure student_delete_trigger ();
+-- 测试
+insert into student values
+  (1, '张三', 14),
+  (2, '李四', 13),
+  (3, '王二', 15);
+
+insert into score values
+  (1, 85, 75, date '2013-05-23'),
+  (1, 80, 73, date '2013-09-18'),
+  (2, 68, 83, date '2013-05-23'),
+  (2, 73, 85, date '2013-09-18'),
+  (3, 72, 79, date '2013-05-23'),
+  (3, 78, 82, date '2013-09-18');
+
+delete from student where student_no=3;
+\d score
+```
+#### 6.5.1 语句级触发器与行触发器
+语句级的触发器是执行每个SQL时，只执行一次，行级触发器则指每行就会执行一次。一个修改零行的操作仍然会导致合适的语句级触发器被执行。
+```SQL
+-- 对表student的更新情况记录log
+create table log_student (
+  update_time timestamp,
+  db_user varchar(40),
+  opr_type varchar(6)
+);
+-- 触发器执行函数：
+create or replace function log_student_trigger ()
+returns trigger as
+$$
+begin
+  insert into log_student values (now(), user, tg_op);  -- tg_op代表DML操作类型
+  return null;
+end;
+$$
+language plpgsql;
+-- 语句级触发器：
+create trigger student_log_trigger
+  after insert or delete or update on student
+  for statement execute procedure log_student_trigger ();
+-- 插入、更新操作：
+insert into student values (3, '王二', 15), (4, '吴五', 16);
+update student set age =15;
+update student set age=16 where student_no=5; -- 触发器依然被触发
+select * from log_student;
+
+-- 删除语句级触发器，情况表student、表log_student中的记录：
+drop trigger student_log_trigger on student;
+delete from log_student;
+delete from student;
+-- 行级触发器：
+create trigger student_log_trigger
+  after insert or delete or update on student
+  for each row execute procedure log_student_trigger ();
+insert into student values (1, '张三', 14), (2, '李四', 13);
+update student set age=16 where student_no=3; -- 触发器不被触发
+```
+#### 6.5.3 before触发器与after触发器
+> 行级别的“after”触发器会在任何语句级别的“after”触发器被触发之前触发。
+
+“before”触发器可以直接修改“new”值以改变实际更新的值：
+```SQL
+create function student_use_new_name_trigger ()
+returns trigger as '
+begin
+  new.student_name = new.student_name || new.student_no;
+  return new;
+end;'
+language plpgsql;
+
+create trigger user_new_name_student_trigger
+  before insert or update on student
+  for each row execute procedure student_use_new_name_trigger ();
+```
+#### 删除触发器
+语法：
+drop trigger [ if exists ] name on table [ cascade | restrict ];
+> restrict是默认值，如果有任何依赖对象存在，那么拒绝删除。在PostgreSQL中，要在删除触发器的语法中指定“on table”，其他数据库可能不需要。
+
+#### 触发器的行为
+触发器执行函数有返回值，语句级触发器应该总是返回null，即必须显式地在函数中写上“return null”，否则触发时报错。对于“before”和“instead of”这类行级别触发器来说，如果返回的是null，则表示忽略当前行的操作。对于“after”行级触发器，返回值会被忽略。
+如果同一事件上有多个触发器，则按照触发器名字的顺序来触发。如果是“before”和“instead of”行级触发器，每个触发器返回的行将成为下个触发器的输入。若返回为空，那么该行上的其他行级触发器也不会被触发。
+#### 触发器函数中的特殊变量
+当把一个PL/pgSQL函数当作触发器函数调用的时候，系统会在顶层的声明段里自动创建几个特殊的变量：
+- new：该变量为INSERT/UPDATE操作触发的行级触发器中存在的新的数据行，数据类型是“RECORD”。在语句级别的触发器里此变量没有分配，DELETE操作触发的行级别触发器中此变量也没有分配。
+- old：该变量为UPDATE/DELETE操作触发的行级触发器中存储的旧数据行，数据类型是“RECORD”。在语句级别的触发器里此变量没有分配，INSERT操作触发的行级触发器中此变量也没有分配。
+- tg_name：数据类型是name，该变量包含实际触发的触发器名。
+- tg_when：内容为“BEFORE”或“AFTER”的字符串用于指定是BEFORE触发器还是AFTER触发器。
+- tg_level：内容为“ROW”或“STATEMENT”的字符串。
+- tg_op：内容为“INSERT”、“UPDATE”、“DELETE”、“TRUNCATE”之一的字符串，用于指定DML语句的类型。
+- tg_relid：触发器所在表的OID。
+- tg_relname：触发器所在表的名称（废弃）。
+- tg_table_name：触发器所在表的名称。
+- tg_table_schema：触发器所在表的模式。
+- tg_nargs：在create trigger语句里赋予触发器过程的参数个数。
+- tg_argv[]：为text类型的一个数组，是create trigger语句里的参数。
+
+### 6.6 事件触发器
+弥补PostgreSQL以前版本不支持DDL触发器的中能：
+- ddl_command_start：一个DDL开始执行前被触发。
+- ddl_command_end：一个DDL执行完成后被触发。
+- sql_stop：删除一个数据库对象前被触发。
+> 只有超级用户才能创建和修改时间触发器。触发事件见P181~183
+
+#### 6.6.1 创建事件触发器
+语法：
+```SQL
+create event trigger name
+  on event
+  [ with filter_variable in (filter_value [, ... ]) [ and ... ] ]
+  execute procedure function_name ();
+
+-- 触发器执行函数的返回类型为event_trigger
+-- 官方手册中一个禁止所有DDL语句的例子：
+create or replace function abort_any_command ()
+returns event_trigger
+language plpgsql
+as $$
+begin
+  raise exception 'command % is disabled', tg_tag;
+end;
+$$;
+
+create event trigger abort_DDL on ddl_command_start
+  execute procedure abort_any_command ();
+
+-- truncate table还是可以执行的。事件触发器本身的操作不会再触发时间触发器。
+-- 禁止事件触发器：
+alter event trigger abort_DDL disable;
+```
+对于“aql_drop”事件触发器中的函数，可以调用一个函数pg_event_trigger_dropped_object()获得删除数据库对象的信息，其返回的结果包括：
+classid：数据库对象的类型（catalog）的OID
+objid：数据库对象的OID
+objsubid：数据库对象的子对象（如列）
+object_type：数据库对象的类型
+schema_name：数据库对象的模式名
+object_name：数据库对象的名称
+object_identity：数据库对象的标识符
+查询系统视图pg_event_trgger可以看到已有的所有事件触发器：
+`select * from pg_event_trigger`
+
+```SQL
+-- 创建一个事件触发器，用于记录数据库对象删除的审计日志：
+create table log_drop_objects (
+  op_time timestamp,
+  ddl_tag text,
+  classid oid,
+  objid oid,
+  objsubid oid,
+  object_type text,
+  schema_name text,
+  object_name text,
+  object_identity text
+);
+
+create function event_trigger_log_drop ()
+returns event_trigger language plpgsql as $$
+declare
+  obj record;
+begin
+  insert into log_drop_objects select now(), tg_tag, classid, objid, objsubid, object_type,
+    schema_name, object_name, object_identity from pg_event_trigger_dropped_objects ();
+end
+$$;
+
+create event trigger drop_log_event_trigger
+  on sql_drop
+  execute procedure event_trigger_log_drop ();
+
+-- 测试：
+create table test01 (id int primary key, note varchar(20));
+alter table test01 drop column note;
+select * from log_drop_objects;
+drop table test01;
+select * from log_drop_objects;
+```
+#### 修改事件触发器
+语法：
+```SQL
+alter event trigger name disable
+alter event trigger name enable [ replica | always ]
+alter event trigger name OWNER to new_owner
+alter event trigger name rename to new_name
+```
+### 6.7 表空间
+#### 6.7.1 表空间的定义
+在PostgreSQL中，表空间实际上是为表指定一个存储目录。在创建数据库时可以为数据库指定默认的表空间。
+#### 表空间的使用
+```SQL
+-- 语法
+create tablespace tablespace_name [ owner user_name ] location 'directory'
+-- 示例：
+create tablespace tbs_data location '/data/pgdata';
+create database db01 tablespace tbs_data;
+alter database db01 set tablespace tbs_data; -- 必须确保没人同时连接到这个数据库上
+-- 改变数据库的默认表空间时，数据库中已有表的表空间并不会改变
+create table test01 (id int, note text) tablespace tbs_data;
+create index idx_test01_id on testdb01 (id) tablespace tbs_data;
+alter table test01 add constraint unique_test01_id unique (id) using index tablespace tbs_data;
+alter table test01 add constraint pk_test01_id primary key (id) using index tablespace tbs_data;
+-- 把一个表从一表空间移动到另一表空间：
+alter table test01 set tablespace pg_default; -- 在移动表的时候会锁表，此时对该表的所有操作都将要被阻塞。
+```
+### 6.8 视图
+#### 6.8.1 视图的定义
+通俗的说，视图就是由查询语句定义的虚拟表。PostgreSQL中提供的视图默认是只读的，但可以使用规则系统做出一张可以更新的视图。
+#### 6.8.2 创建视图
+```SQL
+-- 语法：
+create [ or replace ] [ temp | temporary ] view name [ ( column_name [, ... ] ) ] as query
+-- 示例：
+-- 建视图把原表敏感字段“password”排除掉：
+create table users (
+  id int,
+  user_name varchar(40),
+  password varchar(256),
+  user_email text,
+  user_mark text
+);
+create view vw_users as select id, user_name, user_email, user_mark from users;
+create view vw_users (no, name, email, mark) as select id, user_name, user_email, user_mark from users;
+```
+#### 6.8.3 可更新视图
+```SQL
+insert into users values (1, '张三', '123456', 'zhangsan@yahoo.com.cn', 'hello');
+-- 定义规则(<9.3)：
+create rule vw_users_upd as
+  on update to vw_users do instead update users set user_email=new.user_email;
+update vw_users set user_email='zhangsan@163.com' where id=1;
+-- 9.5.5 可以直接操作视图
+-- 也可以使用“INSTEAD OF”的触发器更新视图
+```
+### 6.9 索引
+#### 6.9.2 索引的分类
+PostgreSQL中，支持以下几类索引：
+- B-tree：适合处理等值查询和范围查询。
+- Hash：只能处理简单的等值查询。
+- GiST：是一种架构，可以在这种架构上实现很多不同的索引策略。GiST索引定义的特定操作符可以用于特定索引策略。
+- SP-GiST：“apace-partitioned GiST”的缩写，即空间区分索引。
+- GIN：反转索引，可以处理包含多个建的值，如数组等。
+#### 6.9.3 创建索引
+```SQL
+-- 语法
+create [ unique ] index [ concurrently ] [ name ] on table_name [ using method ]
+  ( { column_name | ( expression ) } [ collate collation ] [ opclass ] [ asc | sesc ] [ nulls { first | last } ] [, ... ] )
+  [ with ( storage_parameter = value [, ... ] ) ]
+  [ where predicate ]
+-- 示例：
+create table contacts (
+  id int primary key,
+  name varchar(40),
+  phone varchar(32)[],
+  address text
+);
+create index idx_contacts_name on contacts (name); -- B-tree
+create index idx_contacts_phine on contacts using gin (phone);
+-- Hash索引的更新不会记录到WAL日志中。
+-- 指定存储参数“with （storage_paramet=value）”，常使用的存储参数为fillfactor：
+create index idx_contacts_name on contacts (name) with (fillfactor=50);
+-- 按降序建索引：
+create index idx_contacts_name on contacts (name desc);
+-- 如果是字段“name”中有空值，则可以在建索引时，指定空值排在非空值前面或后面：
+create index idx_contacts_name on contacts (name desc nulls first);
+create index idx_contacts_name on contacts (name desc nulls last);
+```
+#### 6.9.4 并发创建索引
+通常，在创建索引的时候PostgreSQL会锁定表以防写入，然后对表做全表扫描，从而完成创建索引操作。PostgreSQL支持不长时间阻塞更新的情况下创建索引，通过在create index中加concurrently（并发创建索引）选项来实现。
+```SQL
+create table testtab01 (id int primary key, note text);
+insert into testtab01 select generate_series(1,5000000), generate_series(1,5000000);
+create index concurrently idx_testtab01_note on testtab01 (note);
+-- 重建索引：使用“concurrently”选项建一个新的索引，然后把旧的索引删除。
+```
+并发创建索引的时候要注意，如果索引在创建过程中被强行取消，可能会留下一个无效的索引，这个索引会导致更新变慢，如果所创建的是一个唯一的索引，这个无效索引还会导致插入重复值失败。需要手动删除该索引。
+#### 6.9.5 修改索引
+```SQL
+alter index name rename to new_name
+alter index name set tablespace tablespace_name
+alter index name set ( storage_parameter = value [, ... ] )
+alter index name reset ( storage_parameter [, ... ] )
+-- 查看索引的信息：
+\d+ index_name
+```
+#### 6.9.6 删除索引
+```SQL
+drop index [ if exists ] name [, ...] [ cascade | restrict ]
+```
+### 6.10 用户及权限管理
+#### 6.10.1 用户和角色
+PostgreSQL使用角色的概念管理数据库访问权限。角色是一系列相关权限的集合。为了管理方便，通常会把一些列相关的数据库权限赋给一个角色，如果哪个用户需要这些权限，就把角色赋给相应的用户。在PostgreSQL中，不区分角色与用户。
+用户和角色在整个数据库实例中都是全局的，且在同一个实例中的不同数据库中，看到的用户也都是相同的。在初始化数据库系统时，预定义的超级用户的名称与初始化该数据库的操作系统用户相同。
+#### 6.10.2 创建用户和角色
+```SQL
+-- 语法：
+create role name [ [ with ] option [ ... ] ]
+create user name [ [ with ] option [ ... ] ]
+-- "create user" 默认创建出来的用户有 "login" 权限，而 "create role" 没有。
+```
+option可以是:
+- superuser | nosuperuser：表示创建出来的用户是否为超级用户。只有超级用户才能创建超级用户。
+- createdb | nocreatedb
+- createrole | nocreaterole
+- createuser | nocreateuser
+- inherit | noinherit：如果创建的一个用户拥有某一个或某几个角色，这时若指定inherit，则表示用户自动拥有相应角色的权限，否则这个用户没有改角色的权限。
+- login | nologin
+- connection limit connlimit：指定该用户可以使用的并发连接数量，默认是-1，表示没有限制。
+- [ encrypted | unencrypted ] password 'password'：用于控制存储在系统表里面的口令是否加密。
+- valid until 'timestamp'：密码失效时间，如果不指定这个子句，那么口令将永远有效。
+- in role role_name [, ...]：指定用户成为哪些角色的成员，请注意没有任何选项可以把新角色添加为管理员，必须使用独立的grant命令来做这件事情。
+- in group role_name [, ...]：与in role相同，是已过时的语法。
+- admin role_name [, ...]：role_name将有这个新建角色的with admin option权限。
+- user role_name [, ...]：与ROLE子句相同，但已过时。
+- sysid uid：此子句主要是为了SQL向下兼容，实际没什么用处。
+
+#### 6.10.3 权限的管理
+在PostgreSQL中，删除一个对象及任意修改它的权力都不能赋予别人，它是所有者固有的，不能被赋予或撤销。所有者也隐含地拥有把操作该对象的权限赋给别人的权限。
+一个用户的权限分为两类，一类是在创建用户时就指定的权限，后面可以使用alter role命令来修改：
+- 超级用户的权限
+- 创建数据库的权限
+- 是否允许LOGIN的权限
+另一类权限是由命令grant和revoke来管理的：
+- 在数据库中创建模式（schema）
+- 允许在指定数据库中创建临时表
+- 连接某个数据库
+- 在模式中创建数据库对象，如创建表、视图、函数等
+- 在一些表中做select、update、insert、delete操作
+- 对序列进行查询（执行序列的currval函数）、使用（执行序列的currval函数和nextval函数）、更新等操作
+- 在声明表上创建触发器
+- 可以把表、索引等建到指定的表空间
+如果要给用户赋予创建数据库的权限，则需要使用“alter role”命令，而要给用户赋予创建模式的权限时，需要使用“grant”命令。
+```SQL
+alter role name [ [ with ] option [ ... ] ]
+grant role_name [, ...] to role_name [, ...] [ with admin option ] -- 命令格式见P200
+grant some_privileges on database_object_type object_name to role_name;
+```
+some_privileges: select; insert; update; delete; truncate; references; trigger; create; connect; temporary或temp; execute; usage; all previleges
+#### 6.10.4 函数和触发器的权限
+PostgreSQL只允许超级用户使用PL语言写函数。
+#### 6.10.5 权限的总结
+管理的层次：
+- 首先管理赋在用户特殊属性上的权限
+- 在数据库中创建模式的权限
+- 模式中创建数据库对象的权限
+- 表查询、插入、更新、删除表内数据的权限
+- 操作表中某些字段的权限
+#### 6.10.6 权限的示例
+```SQL
+-- 创建一个只读用户
+revoke create on schema public from public; -- PostgreSQL中默认任何用户都可以在名称为public的shema中创建列表，此处收回这个权限
+create user readonly with password 'query';
+grant select on all tables in schema public to readonly; -- select现有表的权限
+alter default previleges in schema public grant select on tables to readonly; -- select新建表的权限
+```
+
+### 6.11 事务、并发、锁
+#### 6.11.1 ACID
+在一个事务中，多个插入、修改、删除操作要么全部成功，要么全部失败，这称为“原子性”。一个事务还需要其他三个特性：一致性、隔离性、持久性。这四者统称ACID（atomicity、consistency、isolation、duration）
+在PostgreSQL中，可使用多版本并发控制（MVCC）来维护数据的一致性，优点在于MVCC里对检索（读）数据的锁请求与写数据的锁请求不冲突。
+#### 6.11.2 DDL事务
+相比其他数据库，PostgreSQL中大多数DDL可以包含在一个事务中，而且可以回滚，适合把PostgreSQL作为Sharding的分布式数据系统的底层数据库。比如，在Sharding中，常常需要在多个节点中建相同的表，这时可以考虑把建表语句放在同一个事务中，这样就可以在各个节点上先启动一个事务，然后执行建表语句了。如果中建某个节点失败，可以回滚前面的建表操作。
+#### 6.11.3 事务的使用
+```SQL
+create table testtab01 (id int);
+-- 关闭自动提交：
+\set AUTOCOMMIT off
+\echo :AUTOCOMMIT
+insert into testtab01 values (1);
+insert into testtab01 values (2);
+select * from testtab01;
+rollback;
+select * from testtab01;
+
+-- 使用begin来启动一个事务：
+begin;
+insert into testtab01 values (1);
+insert into testtab01 values (2);
+select * from testtab01;
+rollback;
+select * from testtab01;
+```
+#### 6.11.4 SAVEPOINT
+PostgreSQL支持保存点（savepoint）的功能，在一个大的事务中，可以把操作过程分成几个部分，第一部分成功后，可以建一个保存点，若后面的执行失败，则回滚到这个保存点。
+```SQL
+begin;
+insert into testtab01 values(1);
+insert into testtab01 values(2);
+savepoint my_savepoint01;
+insert into testtab02 values(1); -- error
+rollback to  savepoint my_savepoint01;
+select * from testtab01;
+create table testtab02 (id int);
+insert into testtab02 values(1);
+commit;
+```
+#### 6.11.5 事务隔离级别
+- READ UNCOMMITED：读未提交
+- READ COMMITED：已读提交
+- REPEATABLE READ：重复读
+- SERIALIZABLE：串行化
+并发事务的级别：脏读、不可重复读、幻读。
+读已提交的隔离级别中，select查询看到的是在查询开始运行瞬间的一个快照。
+#### 6.11.6 两阶段提交
+两阶段提交用以保证分布式事务中多台数据库之间的原子性。
+两阶段提交的步骤：
+1） 应用程序先调用各台数据库做一些操作，但不提交事务；然后调用事务协调器中的提交方法。
+2） 事务协调器将联络事务中涉及的每台数据库，并通知它们准备提交事务，这是第一阶段的开始。在PostgreSQL一般是调用“prepare transaction”命令。
+3） 每台数据库接收到“prepare transaction”命令后，如果返回成功，则数据库必须将自己置于以下状态：确保后续能在被要求提交事务时提交任务，或者在被要求回滚时能回滚任务。所以PostgreSQL会将已准备好提交的信息写入持久存储区中，如果数据库无法完成此事务，它会直接返回失败给事务协调器。
+4） 事务协调器接收到所有数据库的响应。
+5） 在第二阶段，如果任一数据库在第一阶段返回失败，则事务协调器将会发一个回滚命令（rollback prepared）给各台数据库。如果所有数据库的响应都是成功的，则向各台数据库发送“commit prepared”命令，通知各台数据库事务成功。
+示例：
+```SQL
+-- 先将参数 max_prepared_transactions 设置成一个大于0的数字，否则有错误
+set max_prepared_transactions=10; -- 无法成功
+-- 直接修改 postgresql.conf 文件，重启数据库
+-- 建一张测试表
+create table testtab01 (id int primary key);
+begin;
+insert into testtab01 values (1);
+prepare transaction 'osdba_global_trans_0001'; -- 该事务会被持久化，即使重启，也不会被回滚或丢失
+-- 至此，停止数据库，然后重启：
+pg_ctl stop -D $PGDATA
+pg_ctl start -D $PGDATA
+psql postgres
+commit prepared 'osdba_global_trans_0001';
+```
+#### 6.11.7 锁机制
+两类：表级锁和行级锁。
+1. 表级锁模式
+share, exclusive, access share, acess exclusive, row share, row exclusive, share update exclusive, share row exclusive
+2. 行级锁模式
+共享锁和排它锁。
+#### 6.11.8 死锁防范
+死锁是指两个或两个以上的事务在执行过程中互相持有对方期待的锁。PostgreSQL能够自动侦测到死锁，然后退出其中一个事务。
+死锁发生的四个必要条件：互斥条件、请求和保持条件、不剥夺条件、环路等待条件。
+#### 6.11.9 表级锁命令lock table
+语法：
+```SQL
+lock [ table ] [ only ] name [, ...] [ in lockmode mode ] [ nowait ] -- lockmode 就是前边的表级锁模式
+```
+#### 6.11.10 行级锁命令
+语法
+```SQL
+-- 显式的行级锁命令是由select命令后面加子句来完成的：
+select ... for { update | share } [ of table_name [, ...] [ nowait ] [...] ]
+```
+#### 6.11.11 锁的查看
+pg_locks 视图：
+locktype, database, relation, page, tuple, virtualxid, transactionid, classid, objid, objsubid, virtualtransaction, pid, mode, granted
+描述事务ID的字段：virtualxid, transactionid, virtualtransaction
+首先“transactionid”代表事务ID，简写为“xid”；“virtualxid”代表虚拟事务ID，简写为“vxid”，比如只读事务或空事务等。
+“virtualtransaction”之前的字段（不包括其本身），称为第一部分；之后（包括其本身）的字段称为第二部分。第一部分用于描述锁定对象的信息，第二部分字段用于描述的是持有锁或等待锁session的信息。
+```SQL
+-- 第1个psql窗口：
+select pg_backedn_pid();
+begin;
+lock table testtab01;
+-- 第2个psql窗口：
+begin;
+lock table testtab01;
+-- 第2个psql窗口：
+select locktype, relation::regclass as rel, virtualxid as vxid, transactionid as xid, virtualtransaction as vxid2, pid, mode, granted, from pg_locks;
+```
+行级锁不仅会在表上加意向锁，也会在相应的主键上加意向锁。pg_locks并不能显示每个行级锁的信息，因为PostgreSQL在内存中并不记录行级锁的信息。想看哪个进程被阻塞了，只需要看“granted”字段为false的pid即可。查询
