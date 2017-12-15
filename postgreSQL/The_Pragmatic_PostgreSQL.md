@@ -59,7 +59,7 @@ pg_ctl stop -D $PGDATA [-m <smart|fast|immediate>]
 2. `postgresql.conf` 在`$PGDATA`下
 监听IP和端口：（修改后要重启数据库）
 ```
-# liste_addresses='localhost'
+# listen_addresses='localhost'
 # port = 5432
 ```
 log相关的参数：
@@ -2157,6 +2157,248 @@ lock table testtab01;
 begin;
 lock table testtab01;
 -- 第2个psql窗口：
-select locktype, relation::regclass as rel, virtualxid as vxid, transactionid as xid, virtualtransaction as vxid2, pid, mode, granted, from pg_locks;
+select locktype, relation::regclass as rel, virtualxid as vxid, transactionid as xid, virtualtransaction as vxid2, pid, mode, granted from pg_locks;
 ```
-行级锁不仅会在表上加意向锁，也会在相应的主键上加意向锁。pg_locks并不能显示每个行级锁的信息，因为PostgreSQL在内存中并不记录行级锁的信息。想看哪个进程被阻塞了，只需要看“granted”字段为false的pid即可。查询
+行级锁不仅会在表上加意向锁，也会在相应的主键上加意向锁。`pg_locks`并不能显示每个行级锁的信息，因为PostgreSQL在内存中并不记录行级锁的信息。想看哪个进程被阻塞了，只需要看“granted”字段为false的pid即可。查询因行级锁被阻塞的进程信息，只需查询视图`pg_locks`中类型为transactionid的锁信息就可以了。哪一行被阻塞可以通过查看pg_locks的“page”和“tuple”字段来了解。
+```SQL
+-- 窗口1：
+update testtab01 set note='aaaa' while id=1;
+-- 窗口2：
+begin;
+update testtab01 set note='aaaa' while id=1;
+-- 窗口3：
+select locktype, relation::regclass as rel, page || ',' || tuple as ctid, virtualxid as vxid, transactionid as vxid, virtualtransaction as vxid2, pid, mode, granted from pg_locks;
+select * from testdb01 where ctid='(0,1)';
+```
+
+## 第7章 PostgreSQL的核心架构
+### 7.1 应用程序的访问接口
+如果应用程序与数据库在一台机器上，也可以使用UNIX domain sockets连接到PostgreSQL数据库。
+Python、Perl等使用C语言接口库libpq驱动连接到PostgreSQL数据库上。
+### 7.2 进程及内存结构 
+PostgreSQL数据库启动时，会先启动一个叫Postmaster的主进程，还会fork出一些辅助子进程：
+- SysLogger（系统日志）进程
+> `postgresql.conf`中参数`logging_collect`设置为`on`时，主进程才会启动SysLogger辅助进程。
+- BgWriter（后台写）进程
+> 把共享内存中的脏页写到磁盘上的进程。由“bgwriter_”开头的配置参数来控制。
+- WalWriter（预写式日志）进程
+> WAL是Write Ahead Log的缩写，即预写式日志。预写式日志就是在修改之前，必须要把这些修改的操作记录到磁盘中。WAL日志保存在`pg_xlog`下。未持久化的数据都可以通过WAL日志来恢复。
+- PgArch（归档）进程
+> PgArch归档进程会在覆盖前把WAL日志备份出来。
+- AutoVAcuum（系统自动清理）进程
+> 只有在没有并发的其他事务读到旧数据时，它们才会被清除掉，由AutoVAcuum完成。
+- PgStat（统计收集）进程
+> 收集的数据统计信息主要用于查询优化时的代价估算。系统表`pg_statistic`中存储了PgStat收集的各类统计信息。
+#### 7.2.2 主进程Postmaster
+postmaster命令是一个指向postgres的链接。查询`pg_stat_activity`时看到的pid，就是服务进程的pid。PostgreSQL数据库是进程架构模型，MySQL数据库是线程架构模型。
+#### 共享内存与本地内存
+## 7.3 目录结构
+#### 安装目录结构
+bin、include、lib、share（文档和配置模板文件，一些扩展包的sql文件在此目录的子目录extension下）
+#### 数据目录的结构
+$PGDATA：
+- 配置文件：`postgresql.conf`、`pg_hha.conf`（认证配置文件，配置了允许哪些IP的主机访问数据库，认证的方法是什么等信息）、`pg_ident.conf`（“ident”认证方式的用户映射文件）
+- 子目录：`base`（默认表空间的目录）、`global`（一些共享系统表的目录）、`pg_clog`（commit log的目录）、`pg_log`（系统日志目录）、`pg_stat_tmp`（统计信息的存储目录）、`pg_tblsp`（存储了指向各个用户自建表空间实际目录的链接文件）、`pg_twophase`（使用两阶段提交功能时分布式事务的存储目录）、`pg_xlog`（WAL日志的目录）
+
+## 第8章 服务管理
+### 8.1 服务的启停与创建
+#### 8.1.1 启停方法
+```shell
+## 启动：
+postgres -D $PGDATA [&]
+pg_ctl -D $PGDATA start
+## 停止：
+pg_ctl stop -D $PGDATA -m smart|fast|immediate
+```
+#### 8.1.2 pg_ctl
+帮助文档：`man pg_ctl`
+初始化PostgreSQL数据库实例的命令：
+`pg_ctl init [db] [-s] [-D datadir] [-o options]`
+- -s：只打印错误和警告信息，不打印提示性信息。
+
+启动PostgreSQL数据库的命令：
+`pg_ctl start [-w] [-t seconds] [-s] [-D datadir] [-l filename] [-o options] [-p path] [-c]`
+- -w：等待启动完成
+- -t：等待启动完成的秒数，默认为60s
+- -s：只打印错误和警告信息，不打印提示性信息。
+- -l：把服务器日志输出附加在“filename”文件上，不存在时创建。
+- -o options：声明要直接传递给postgres的选项，具体见命令帮助。
+- -p：指定postgres可执行文件的位置。默认情况下postgres可执行文件来自和pg_ctl相同的目录。
+- -c：提高服务器的软限制（ulimit -c），尝试允许数据库实例在右异常时产生一个coredump文件，以便于问题定位和故障分析。
+
+停止PostgreSQL数据库的命令：
+`pg_ctl stop [-W] [-t seconds] [-s] [-D datadir] [-m s[mart] | f[ast] | i[mmediate] ]`
+- -W：不等待数据库停下来，命令就返回。
+- -m：停止模式。
+
+重启PostgreSQL数据库的命令：
+`pg_ctl restart [-w] [-t seconds] [-s] [-D datadir] [-c] [-m s[mart] | f[ast] | i[mmediate] ] -o options`
+重新读取配置文件的命令：
+`pg_ctl reload [-s] [-D datadir]`
+查询数据库实例的命令：
+`pg_ctl status [-D datadir]`
+Windows平台下：
+`pg_ctl kill [signal_name] [process_id]`
+`select pg_backend_pid(); select pg_sleep(600); pg_ctl kill int pid`
+`pg_cancle_backend(pid int)`
+Windows平台下注册服务和取消服务的命令：
+`pg_ctl register [-N servicename] [-U username] [-P password] [-D datadir] [-w] [-t seconds] [-o options]`
+`pg_ctl unregister [-N servicename]`
+- -U：用于启动服务的用户名。如果是域用户，需要使用“DOMAIN\username”的格式。
+- -N：要注册的系统服务的名字。这个名字将用于服务名和显示名。
+#### 8.1.3 信号
+- sigterm：smart shutdown关机模式
+- sigint：fast shutdown关机模式
+- sigquit：immediate shutdown关机模式
+#### 8.1.4 Postgres及单用户模式
+postgres单用户模式就是在启动postgres程序时加上“--single”参数，这时postgres不会进入到后台服务模式，而是进入到一个交互式的命令行模式下
+```shell
+postgres --single -D $PGDATA
+```
+在此交互式模式下，可以执行一些命令，如一些SQL语句等。
+
+### 8.2 服务器配置
+#### 8.2.1 配置参数
+`postgresql.conf`文件：
+配置项的参数名都是大小写不敏感的，参数值有下面的类型：
+- 布尔：大小写无关，可以是on、off、true、false、yes、no、1、0。
+- 整数：数值可以指定单位（KB、MB、GB等）。
+- 浮点数
+- 字符串
+- 枚举
+
+使用`include 'filename'`包含其他文件中的配置内容。
+所有的配置参数都在系统视图`pg_settings`中。
+```SQL
+-- 当不知道枚举类型的配置参数`client_min_message`可以取哪些值时，可以用下面的语句查询：
+select enumvals from pg_settings where name='client_min_message';
+-- 查询`autoacuum_vacuum_cost_delay`的单位：
+select unit from pg_settings where name='autoacuum_vacuum_cost_delay';
+-- 查询`autoacuum_vacuum_cost_delay`的描述：
+select short_desc, extra_desc, from pg_settings where name='autoacuum_vacuum_cost_delay';
+```
+参数的分类：internal（只读参数，由postgres程序在初始化实例时写死的）、postmaster（改变这些参数的值要重启PostgreSQL实例）、sighup、backend、superuser（由超级用户用set来改变）、user（普通用户用set改变）
+可以通过查询`pg_settings`表中的context字段值知道改变参数在`postgresql.conf`中的配置时，是否需要重启数据库：
+```SQL
+select name,context from pg_settings where name like 'wal_buffers'; -- postmaster，需要重启
+select name,context from pg_settings where name like 'local_preload_libraries'; -- backed，不需要重启，使用pg_ctl reload
+```
+#### 8.2.2 连接配置项
+- listen_addresses
+- port
+- max_connections
+- superuser_reserved_connections
+- unix_socket_group
+- unix_socket_permissions
+- bonjour
+- bonjour_name
+- tcp_keepalives_interval
+- tcp_keepalives_count
+#### 8.2.3 内存配置项
+- shared_buffers（物理内存的25%）
+- temp_buffers
+- work_mem
+- maintenance_work_mem
+- max_stack_deep
+#### 8.2.4 预写式日志的配置项
+- wal_level
+- fsync
+- synchronous_commit
+- wal_sync_method
+- full_page_writes
+- wal_buffers
+- wal_writer_delay
+- commit_delay
+- commit_siblings
+#### 错误报告和日志项
+`logging_collector = on`
+PostgreSQL也可以把日志发送到操作系统的syslog中，或者多生成一个csv格式的日志：
+`log_destination = 'syslog'`
+`log_destination = 'evwntlog'` Windows平台下。
+生成csv格式日志：
+`log_destination = 'csvlog'`
+其他参数：
+- log_directory
+- log_filename
+- log_rotation_age
+- log_rotation_size
+- log_truncate_on_rotation
+- syslog_facility
+- syslog_ident
+- debug_print_parse
+- debug_print_rewritten
+- debug_print_plan
+- debug_pretty_print
+- log_checkpoints
+- log_connections
+- log_disconnections
+- log_duration
+- log_hostname
+- log_lock_waits
+### 8.3 访问控制配置文件
+`pg_hba.conf`文件：
+由多条记录组成，每条记录占一行。每条记录声明一种连接类型、一个客户端IP地址范围、一个数据库名、一个用户名，以及匹配这些参数的连接所使用的认证方式。
+#### 8.3.1 `pg_hba.conf`文件
+格式：
+local dbname user auth-method [auth-options]
+host dbname user ip/masklen auth-method [auth-options]
+hostssl dbname user ip/masklen auth-method [auth-options]
+hostnossl dbname user ip/masklen auth-method [auth-options]
+hostssl dbname user ip mask auth-method [auth-options]
+hostnossl dbname user ip mask auth-method [auth-options]
+- dbname：用于设置一个数据库名称，如果设置为all，表示可以匹配任何数据库；如果设置为replication，表示允许流复制连接
+- ip/masklen：掩码为32，完全匹配这个IP；192.168.1.0/24表示IP地址前缀为192.168.1.X的主机都允许访问数据库服务器
+- auth-method：表示验证方法（trust、reject、md5、ident等）
+#### 8.3.2 认证方法介绍
+- trust
+- reject
+- md5
+- gss
+- sspi
+- password
+- krb5
+- ident：允许客户端上的特定用户连接到数据库。
+- ldap
+- radius
+- cert
+- pam
+### 8.4 备份和还原
+#### 8.4.1 逻辑备份
+PostgreSQL提供了`pg_dump`、`pg_dunmpall`命令进行数据库的逻辑备份。
+`pg_dump`并不阻塞其他用户对数据库的访问（读或写）。
+`pg_dump`生成的备份文件可以是一个SQL脚本文件或归档文件。
+#### 8.4.2 `pg_dump`命令
+格式：
+`pg_dump [connection-option...] [option...] [dbname]`
+连接选项：
+- -h host 或 --host=host：默认为$PGGHOST环境变量
+- -p port 或 --port=port：$PGPORT
+- -U username 或 --username=username
+- -w 或 --no-password：从不提示密码。
+- -W 或 --password：从不提示密码。
+- --role=rolename：该选项导致pg_dump在连接到数据库时发布一个set role rolename命令。这相当于切换到另一个角色。
+- dbname
+专有参数，用来控制备份哪些表的数据及输出数据的格式：
+- -a 或 --data-only：只输出数据，不输出数据定义的SQL语句。
+- -b 或 --blobs：在转储中是否包含大对象。除非指定了选择性转储的选项--schema、--table、--schema-only开关，否则默认会转储大对象。
+- -c 或 --clean：指定输出的脚本中是否含有生成清理该数据库对象语句（如drop table命令）。
+- -C 或 --create：指定脚本中是否输出一条create database语句和连接到该数据看的语句。
+- -E encoding 或 --encoding=encoding：以指定的字符集编码创建转储。（$PGCLINTENCODING）
+- -f file 或 --file=file：输出到指定的文件中，否则输出到标准输出中。
+- -F format 或 --format=format：可以是p（plain，纯文本SQL脚本文件格式）、c（custom，以一个适合`pg_restore`使用的自定义格式输出并归档，默认是压缩的）、t（以一个适合输入`pg_restore`的tar格式输出并归档，不支持压缩，独立表的大小限制为8GB）
+- -n schema 或 --schema=schema：可以使用多个-n指定多个模式。
+- -N schema 或 --exclude-schema=schema
+- -o 或 --oids
+- -O 或 --no-owner
+- -s 或 --schema-only：只输出对象定义（模式），不输出数据。
+- -S username 或 --superuser=username
+- -t table 或 --table=table：使用-t之后，-n和-N选项就失效了。并不会转储表所依赖的其他数据库对象。
+- -T table 或 --exclude-table=table
+- -v 或 --verbose：输出到标准错误上
+- -V 或 --version
+- -x 或 -- no-privileges 或 --no-acl：禁止转储访问权限（grant/revoke命令）
+- -Z 0...9 或 --compress=0...9
+- --binary-upgrade
+- --insert：将为每一行生成一个单独的insert命令
+- --column-inserts 或 --attribute-inserts：显式列名的INSERT命令
+- --disable-dollor-quoting：用于关闭使用美元符界定函数体。
