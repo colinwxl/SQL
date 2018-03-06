@@ -2150,7 +2150,7 @@ locktype, database, relation, page, tuple, virtualxid, transactionid, classid, o
 “virtualtransaction”之前的字段（不包括其本身），称为第一部分；之后（包括其本身）的字段称为第二部分。第一部分用于描述锁定对象的信息，第二部分字段用于描述的是持有锁或等待锁session的信息。
 ```SQL
 -- 第1个psql窗口：
-select pg_backedn_pid();
+select pg_backend_pid();
 begin;
 lock table testtab01;
 -- 第2个psql窗口：
@@ -2375,7 +2375,7 @@ PostgreSQL提供了`pg_dump`、`pg_dunmpall`命令进行数据库的逻辑备份
 - -p port 或 --port=port：$PGPORT
 - -U username 或 --username=username
 - -w 或 --no-password：从不提示密码。
-- -W 或 --password：从不提示密码。
+- -W 或 --password：强制pg_dump在连接到一个数据库之前提示密码。
 - --role=rolename：该选项导致pg_dump在连接到数据库时发布一个set role rolename命令。这相当于切换到另一个角色。
 - dbname
 专有参数，用来控制备份哪些表的数据及输出数据的格式：
@@ -2386,19 +2386,209 @@ PostgreSQL提供了`pg_dump`、`pg_dunmpall`命令进行数据库的逻辑备份
 - -E encoding 或 --encoding=encoding：以指定的字符集编码创建转储。（$PGCLINTENCODING）
 - -f file 或 --file=file：输出到指定的文件中，否则输出到标准输出中。
 - -F format 或 --format=format：可以是p（plain，纯文本SQL脚本文件格式）、c（custom，以一个适合`pg_restore`使用的自定义格式输出并归档，默认是压缩的）、t（以一个适合输入`pg_restore`的tar格式输出并归档，不支持压缩，独立表的大小限制为8GB）
-- -n schema 或 --schema=schema：可以使用多个-n指定多个模式。
+- -n schema 或 --schema=schema：只转储匹配schema的模式内容，包括模式本身以及其中包含的对象。可以使用多个-n指定多个模式。
 - -N schema 或 --exclude-schema=schema
-- -o 或 --oids
-- -O 或 --no-owner
+- -o 或 --oids：指定是否为每个表都输出对象表示（OID）。
+- -O 或 --no-owner：表示不把对象的所有权设置为对应源数据库中的owner。
 - -s 或 --schema-only：只输出对象定义（模式），不输出数据。
-- -S username 或 --superuser=username
+- -S username 或 --superuser=username：指定关闭触发器时需要用到的超级用户名。
 - -t table 或 --table=table：使用-t之后，-n和-N选项就失效了。并不会转储表所依赖的其他数据库对象。
 - -T table 或 --exclude-table=table
-- -v 或 --verbose：输出到标准错误上
-- -V 或 --version
+- -v 或 --verbose：详细信息输出到标准错误上
+- -V 或 --version：输出pg_dump版本并退出。
 - -x 或 -- no-privileges 或 --no-acl：禁止转储访问权限（grant/revoke命令）
 - -Z 0...9 或 --compress=0...9
 - --binary-upgrade
 - --insert：将为每一行生成一个单独的insert命令
 - --column-inserts 或 --attribute-inserts：显式列名的INSERT命令
 - --disable-dollor-quoting：用于关闭使用美元符界定函数体。
+- --disable-trigger：告诉pg_dump在恢复数据时，临时关闭目标表上触发器的命令。（必须是超级用户，执行转储脚本时，应该用-S指定一个超级用户的名称。）
+- --lock-wait-timeout=timeout：不要永远等待在开始转储时获取共享锁表锁。
+- --no-tablespaces：表示不输出命令来选择表空间。
+- --use-set-session-authorization：输出符合SQL标准的`set session authorization`命令而不是`alter owner`命令。
+
+#### 8.4.3 `pg_restore`命令
+格式：
+`pg_restore [connection-option...] [option...] [filename]`
+连接参数与`pg_dump`基本相同，使用-d dbname来连接指定的数据库。
+其他参数见P255--257。
+
+#### 8.4.4 `pg_dump`和`pg_restore`使用举例
+```shell
+# 本地数据库不需要密码，备份文件的格式是脚本文件格式：
+pg_dump osdba > osdba.sql
+# 远程数据库：
+pg_dump -h 192.168.122.1 -Uosdba osdba > osdba.sql
+# 自定义格式：
+pg_dump -Fc -h 192.168.122.1 -Uosdba osdba > osdba.dump
+# 恢复到数据库osdba2：
+createdb osdba2
+pg_restore -d osdba2 osdba.dump
+# 备份表：
+pg_dump -t testtab > testtab.sql
+# 备份“sche1”模式中所有以job开头的表，但不包括job_log表：
+pg_dump -t 'sche1.job*' -T sche1.job_log osdba > sche1.job.sql
+# 不包括名字以_log结尾的表：
+pg_dump -T '*_log' osdba > nolog.sql
+# 不同服务器之间的转储：
+pg_dump -h 192.168.122.1 -Uosdba osdba -Fc > osdba.dump
+pg_restore -h 192.168.122.2 -Uosdba -C -d postgres osdba.dump
+# 重新加载到一个不是新建的不同名的数据库：
+createdb -T template0 osdba2
+pg_restore -d osdba2 osdba.dump
+```
+#### 8.4.5 物理备份
+冷备份：把数据库停下来，然后把数据库的PGDATA目录拷贝下来就可以了。
+热备份：不停止数据库就能完成数据库的备份：
+- 第一种方法：使用数据库的RITR方法进行热备份。
+- 第二种方法：使用文件系统或块设备级别的快照功能完成备份。（Linux下：LVM，Solaris下：ZFS）
+
+#### 8.4.6 使用LVM快照进行热备份
+...暂略
+
+### 8.5 常用的管理命令
+#### 8.5.1 查看系统信息的常用命令
+```SQL
+-- 查看数据库实例的版本：
+select version();
+-- 查看数据库的启动时间：
+select pg_postmaster_start_time();
+-- 查看最后load配置文件的时间：
+select pg_conf_load_time();
+-- 使用`pg_ctl reload`改变配置的装载时间：
+pg_ctl reload -- shell
+psql -- shell
+select pg_conf_load_time();
+-- 显示当前数据库时区：
+show timezone;
+-- 查看当前实例中有哪些数据库：
+psql -l -- shell
+\l
+-- 当前用户
+select user;
+select current_user;
+select session_user;
+-- 使用命令“set role”改变用户角色时，user会和session_user不一样：
+set role u01;
+select session_user; -- 始终是那个原始用户
+select user; -- u01
+-- 查询当前连接的数据库名称：
+select current_catalog, current_database; -- catalog是SQL标准中的用语。
+-- 查询当前数据库服务器的IP地址及端口：
+select inet_client_addr(), inet_client_port();
+-- 当前session的后台服务进程的pid：
+select pg_backend_pid();
+-- 查看此后台进程：
+ps -ef | grep pid | grep -v grep
+-- 查看参数配置情况：
+show shared_buffers;
+select current_setting('shared_buffers');
+-- 修改配置参数：
+set maintenance_work_mem to '128MB';
+select set_config('maintenance_work_mem', '128MB', false);
+-- 查看当前正在写的WAL文件：
+select pg_xlogfile_name(pg_current_xlog_location());
+-- 查看当前WAL的buffer中还有多少字节的数据没有写到磁盘中：
+select pg_xlog_location_diff(pg_current_xlog_insert_location(), pg_current_xlog_location());
+-- 实例是否在做基础备份：
+select pg_is_in_backup(), pg_backup_start_time();
+-- 是否是Hot Standby状态：
+select pg_is_in_recovery();
+-- 数据库大小：
+select pg_database_size('osdba'), pg_size_pretty(pg_database_size('osdba'));
+-- 表大小：
+select pg_size_pretty(pg_relation_size('ipdb2'));
+select pg_size_pretty(pg_total_relation_size('ipdb2'));
+-- pg_total_relation_size把表上索引的大小也计算出来
+-- 表上所有索引大小：
+select pg_size_pretty(pg_indexes_size('ipdb2')); -- pg_indexes_size()的参数是一个表对应的oid
+-- 表空间大小：
+select pg_size_pretty(pg_tablespace_size('pg_global')); -- 全局表空间
+select pg_size_pretty(pg_tablespace_size('pg_default')); -- 默认表空间
+-- 表对应的数据文件：
+select pg_relation_filepath('test01');
+```
+#### 系统维护常用命令
+```SQL
+-- 重载配置文件：
+pg_ctl reload -- shell
+select pg_reload_conf();
+-- 切换log文件到下一个：
+select pg_rotate_logfile();
+-- 切换WAL日志文件：
+select pg_switch_xlog();
+-- 手动产生一次checkpoint：
+checkpoint;
+-- 取消一个长时间执行的SQL：
+pg_cancle_backend(pid);
+pg_terminate_backend(pid);
+-- 试图找出长时间运行的SQL：
+select pid,username,query_start,query from pg_stat_activity;
+-- 先用pg_cancle_backend()，取消不了再用pg_terminate_backend()。
+```
+
+## 第九章 PostgreSQL中执行计划
+### 9.1 执行计划的解释
+#### 9.1.1 explain命令
+格式：
+explain [ ( option [, ...] ) ] statement
+explain [ analyze ] [ verbose ] statement
+命令的可选选项：
+analyze [ boolean ]
+verbose [ boolean ]
+costs [ boolean ]
+buffers [ boolean ]
+format { text | xml | json | yaml }
+analyze选项通过实际执行的SQL来获得相应的执行计划。为了避免影响实际数据，可以把`explain analyze`放在一个事务中，执行完后回滚事务：
+```SQL
+begin;
+explain analyze ...;
+rollback;
+```
+verbose选项用于显示年计划的附加信息（计划树中每个节点输出的各个列，触发器的名称）。默认值为false。
+costs选项显示每个计划节点的启动成本和总成本，以及估计行数和每行宽度。默认值为true。
+buffers选项显示关于缓冲区使用的信息。只能与analyze参数一起使用。默认值为false。
+format选项指定输出格式。默认值为text。
+#### 9.1.2 explain输出结果解释
+```SQL
+explain select * from testtab01;
+```
+`Seq Scan`：顺序扫描，全表扫描。
+`cost=`：后面有两个数字，中间由“..”分隔，第一个数字表示启动的成本，也就是说返回第一行需要多少cost值；第二个数字表示返回所有数据的成本。
+`rows=`：返回的行数。
+`width=`：每行平均宽度字节数。
+成本“cost”描述一个SQL执行的代价，默认情况下：
+- 顺序扫描一个数据块，cost值定为1。
+- 随机扫描一个数据块，4。
+- 处理一个数据行的CPU，0.01。
+- 处理一个索引行的CPU，0.005。
+- 每个操作符的CPU代价为0.0025。
+
+#### 9.1.3 explain使用示例
+```SQL
+explain (format json) select * from testtab1;
+explain (format xml) select * from testtab1;
+explain (format yaml) select * from testtab1;
+explain analyze select * from testtab1; -- 多了实际启动、执行时间和实际扫描行数。
+explain (analyze true) select * from testtab1;
+```
+
+#### 9.1.4 全表扫描
+Seq Scan
+
+#### 9.1.5 索引扫描
+在索引中找出需要的数据行的物理位置，然后再到表的数据块中把相应的数据读出来。
+Index Scan
+
+#### 9.1.6 位图扫描
+扫描索引，把满足条件的行或块在内存中建一个位图，扫描完索引后，再根据位图到表的数据文件中把相应的数据读出来。
+Bitmap Index Scan -> Bitmap Heat Scan
+
+#### 9.1.7 条件过滤
+条件过滤在执行计划中显示为“Filter”。
+
+#### 9.1.8 Nestloop join
+嵌套循环连接（Nestloop Join）是在两个表做连接时最朴素的一种连接方式。在嵌套循环中，内表被外表驱动，外表返回的每一行都要在内表中检索找到与它匹配的行，因此整个查询返回的结果不能太大（>10000不合适），要把返回子集较小的表作为外表，而且在内表的连接字段上要有索引，否则会很慢。
+
+#### 9.1.9 Hash Join
+优化器使用两个表中较小的表，并利用连接键在内存中建立散列表，然后扫描较大的表并探测散列表，找出散列表匹配的行。这种方式适用于较小的表可以放于内存中的情况，这样总成本就是访问两个表的成本之和。
